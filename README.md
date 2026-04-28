@@ -1,3 +1,7 @@
-# f1-stratergy-lab
-# API: OpenF1 (https://api.openf1.org/v1) — free, no auth, JSON, has telemetry + lap times + positions + weather
-# Stack: Vite + React + Recharts + TanStack Query
+# F1 stratergy lab
+
+React dashboard for visualizing Formula 1 race data. Built with Vite, Recharts, and TanStack Query.
+
+Data sourced from [OpenF1](https://openf1.org) (telemetry, laps, positions) and [Jolpica-F1](https://api.jolpi.ca/ergast/f1) (season standings).
+
+Run with `npm install && npm run dev`.
