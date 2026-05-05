@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell, LineChart, Line } from 'recharts';
-
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+         Cell, LineChart, Line, ScatterChart, Scatter } from 'recharts';
 const OVERVIEW_CACHE = {};
 
 const getTyreColor = (compound) => {
@@ -195,57 +195,88 @@ function RaceDashboard({ data, year, race }) {
 
 function DriverRaceDetail({ driver, data, year, race }) {
   const speedStat = (data.speeds || []).find(s => s.abbreviation === driver);
-  const posDelta = (data.positions_delta || []).find(p => p.abbreviation === driver);
+  const posDelta = (data.results || []).find(p => p.abbreviation === driver);
   const startStat = (data.start_performance || []).find(s => s.abbreviation === driver);
   const consStat = (data.consistency || []).find(c => c.abbreviation === driver);
-  
   const driverNum = speedStat?.driver;
   const stints = data.strategies ? data.strategies[driver] : [];
 
+  const [lapData, setLapData] = useState([]);
+  const [degData, setDegData] = useState([]);
+  const [degLoading, setDegLoading] = useState(false);
+
+  useEffect(() => {
+    if (!driverNum) return;
+    setLapData([]);
+    setDegData([]);
+    setDegLoading(true);
+
+    fetch(`http://localhost:8000/api/historic/${year}/${race}/driver/${driverNum}/laps`)
+      .then(r => r.json())
+      .then(j => {
+        if (j.data) setLapData(j.data.filter(l => l.position !== null));
+      })
+      .catch(() => {});
+
+    fetch(`http://localhost:8000/api/historic/${year}/${race}/tyre-degradation`)
+      .then(r => r.json())
+      .then(j => {
+        if (!j.data) return;
+        setDegData(j.data.stints.filter(s => s.abbreviation === driver));
+        setDegLoading(false);
+      })
+      .catch(() => setDegLoading(false));
+  }, [driverNum, year, race, driver]);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <h2 style={{ margin: 0, color: '#fff', textTransform: 'uppercase' }}>{driver} - Race Report</h2>
+      <h2 style={{ margin: 0, color: '#fff', textTransform: 'uppercase' }}>{driver} — Race Report</h2>
 
       <div style={{ display: 'flex', gap: 15, flexWrap: 'wrap' }}>
-        <StatBox 
-          label="Positions Gained" 
-          value={`${posDelta?.gained > 0 ? '+' : ''}${posDelta?.gained || 0}`} 
-          color={posDelta?.gained > 0 ? '#4CAF50' : posDelta?.gained < 0 ? '#E80020' : '#fff'} 
+        <StatBox
+          label="Positions Gained"
+          value={`${posDelta?.gained > 0 ? '+' : ''}${posDelta?.gained ?? 0}`}
+          color={posDelta?.gained > 0 ? '#4CAF50' : posDelta?.gained < 0 ? '#E80020' : '#fff'}
         />
-        <StatBox 
-          label="Points Scored" 
-          value={posDelta?.points !== undefined ? posDelta.points : '0'} 
-          color={posDelta?.points > 0 ? '#9C27B0' : '#fff'} 
+        <StatBox
+          label="Points Scored"
+          value={posDelta?.points ?? 0}
+          color={posDelta?.points > 0 ? '#9C27B0' : '#fff'}
         />
-        <StatBox 
-          label="Lap 1 Performance" 
-          value={startStat ? (startStat.delta > 0 ? `+${startStat.delta}` : startStat.delta < 0 ? `${startStat.delta}` : '0') : 'N/A'} 
-          color={startStat?.delta > 0 ? '#4CAF50' : startStat?.delta < 0 ? '#E80020' : '#fff'} 
+        <StatBox
+          label="Lap 1 Delta"
+          value={startStat ? (startStat.delta > 0 ? `+${startStat.delta}` : `${startStat.delta}`) : 'N/A'}
+          color={startStat?.delta > 0 ? '#4CAF50' : startStat?.delta < 0 ? '#E80020' : '#fff'}
         />
-        <StatBox 
-          label="Top Speed Trap" 
-          value={speedStat?.speed ? `${speedStat.speed} km/h` : 'N/A'} 
+        <StatBox
+          label="Top Speed"
+          value={speedStat?.speed ? `${speedStat.speed} km/h` : 'N/A'}
         />
-        <StatBox 
-          label="Pace Variance" 
-          value={consStat?.variance ? `±${consStat.variance.toFixed(3)}s` : 'N/A'} 
-          color="#0093CC" 
+        <StatBox
+          label="Pace Variance"
+          value={consStat?.variance ? `±${consStat.variance.toFixed(3)}s` : 'N/A'}
+          color="#0093CC"
         />
       </div>
 
       {stints && stints.length > 0 && (
         <div style={{ ...STAT_BOX, padding: '15px 20px', flexShrink: 0 }}>
-          <div style={{ color: '#888', fontSize: 11, textTransform: 'uppercase', marginBottom: 10 }}>Tyre Strategy Timeline</div>
+          <div style={{ color: '#888', fontSize: 11, textTransform: 'uppercase', marginBottom: 10 }}>
+            Tyre Strategy Timeline
+          </div>
           <div style={{ display: 'flex', height: 24, background: '#222', borderRadius: 4, overflow: 'hidden' }}>
             {stints.map((s, i) => (
-              <div key={i} style={{ 
-                width: `${(s.laps / Math.max(data.total_laps || 1, 1)) * 100}%`, 
-                background: getTyreColor(s.compound), 
-                borderRight: '2px solid #111',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                color: ['#FFFFFF', '#FFD124'].includes(getTyreColor(s.compound)) ? '#000' : '#fff',
-                fontSize: 11, fontWeight: 'bold'
-              }}>
+              <div
+                key={i}
+                style={{
+                  width: `${(s.laps / Math.max(data.total_laps || 1, 1)) * 100}%`,
+                  background: getTyreColor(s.compound),
+                  borderRight: '2px solid #111',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: ['#FFFFFF', '#FFD124'].includes(getTyreColor(s.compound)) ? '#000' : '#fff',
+                  fontSize: 11, fontWeight: 'bold',
+                }}
+              >
                 {s.laps}L {s.compound?.charAt(0) || '?'}
               </div>
             ))}
@@ -254,16 +285,181 @@ function DriverRaceDetail({ driver, data, year, race }) {
       )}
 
       {driverNum && (
-        <div style={{ ...STAT_BOX, minHeight: 350, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+        <div style={{ ...STAT_BOX, minHeight: 320, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
           <div style={{ color: '#888', fontSize: 11, textTransform: 'uppercase', marginBottom: 10, display: 'flex', justifyContent: 'space-between' }}>
             <span>Position Timeline & Pit Stops</span>
-            <span><span style={{ color: '#0093CC' }}>— Track Position</span> | <span style={{ color: '#E80020' }}>○ Pit Stop</span></span>
+            <span>
+              <span style={{ color: '#0093CC' }}>— Track Position</span>
+              {' | '}
+              <span style={{ color: '#E80020' }}>○ Pit Stop</span>
+            </span>
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
-            <DriverLapAnalyzer year={year} race={race} driverNumber={driverNum} />
+            <DriverLapAnalyzer lapData={lapData} />
           </div>
         </div>
       )}
+
+      <div style={{ ...STAT_BOX, minHeight: 320, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+        <div style={{ color: '#888', fontSize: 11, textTransform: 'uppercase', marginBottom: 10, display: 'flex', justifyContent: 'space-between' }}>
+          <span>Tyre Degradation — Lap Time vs Tyre Age</span>
+          <span style={{ color: '#555' }}>{degLoading ? 'calculating...' : degData.length === 0 ? 'no clean stint data' : ''}</span>
+        </div>
+        <div style={{ flex: 1, minHeight: 0 }}>
+          {degData.length > 0
+            ? <TyreDegChart stints={degData} />
+            : !degLoading && <div style={{ color: '#555', fontSize: 12, paddingTop: 10 }}>Insufficient clean laps to compute degradation.</div>
+          }
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function DriverLapAnalyzer({ lapData }) {
+  if (!lapData.length) {
+    return <div style={{ color: '#555', fontSize: 12, paddingTop: 10 }}>Loading position trace...</div>;
+  }
+
+  const PitStopMarker = (props) => {
+    const { cx, cy, payload } = props;
+    if (payload.pit_in) {
+      return (
+        <g transform={`translate(${cx},${cy})`}>
+          <circle r={5} fill="#111" stroke="#E80020" strokeWidth={2} />
+          <text x={0} y={-10} textAnchor="middle" fill="#E80020" fontSize={10} fontWeight="bold">PIT</text>
+        </g>
+      );
+    }
+    return <circle cx={cx} cy={cy} r={2} fill="#0093CC" stroke="none" />;
+  };
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart data={lapData} margin={{ top: 20, right: 20, left: -10, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
+        <XAxis dataKey="lap" stroke="#666" tick={{ fontSize: 11 }} />
+        <YAxis
+          domain={[1, 20]}
+          reversed
+          stroke="#666"
+          tickFormatter={v => `P${v}`}
+          tick={{ fontSize: 11 }}
+          interval={0}
+          width={40}
+        />
+        <Tooltip
+          contentStyle={{ background: '#0a0a0a', border: '1px solid #333' }}
+          labelStyle={{ color: '#888', marginBottom: 5 }}
+          formatter={(v, name, p) => {
+            if (name === 'position') {
+              const pit = p.payload.pit_in ? ' (Pit Stop)' : '';
+              return [`P${v}${pit} — ${p.payload.compound}`, 'Track Position'];
+            }
+            return [v, name];
+          }}
+          labelFormatter={label => `Lap ${label}`}
+        />
+        <Line
+          type="stepAfter"
+          dataKey="position"
+          stroke="#0093CC"
+          strokeWidth={2}
+          dot={<PitStopMarker />}
+          activeDot={{ r: 6, fill: '#fff' }}
+          isAnimationActive={false}
+        />
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+
+function TyreDegChart({ stints }) {
+  const COMPOUND_COLORS = {
+    SOFT: '#E80020',
+    MEDIUM: '#FFD124',
+    HARD: '#FFFFFF',
+    INTERMEDIATE: '#4CAF50',
+    WET: '#2196F3',
+  };
+
+  if (!stints.length) return null;
+
+  const allPoints = stints.flatMap(s =>
+    (s.points || []).map(p => ({
+      tyre_life: p.tyre_life,
+      lap_time: p.lap_time,
+      compound: s.compound,
+      stint: s.stint,
+    }))
+  );
+
+  if (!allPoints.length) {
+    return <div style={{ color: '#555', fontSize: 12 }}>No clean laps to plot.</div>;
+  }
+
+  const yVals = allPoints.map(p => p.lap_time);
+  const yMin = Math.floor(Math.min(...yVals)) - 1;
+  const yMax = Math.ceil(Math.max(...yVals)) + 1;
+
+  return (
+    <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <ScatterChart margin={{ top: 10, right: 20, left: 10, bottom: 20 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#222" />
+          <XAxis
+            dataKey="tyre_life"
+            name="Tyre Age"
+            stroke="#666"
+            tick={{ fontSize: 11 }}
+            label={{ value: 'Tyre Age (laps)', position: 'insideBottom', offset: -10, fill: '#666', fontSize: 11 }}
+            type="number"
+          />
+          <YAxis
+            dataKey="lap_time"
+            name="Lap Time"
+            stroke="#666"
+            domain={[yMin, yMax]}
+            tickFormatter={v => formatTime(v)}
+            tick={{ fontSize: 10 }}
+            width={58}
+            type="number"
+          />
+          <Tooltip
+            cursor={{ strokeDasharray: '3 3' }}
+            contentStyle={{ background: '#0a0a0a', border: '1px solid #333', fontSize: 12 }}
+            formatter={(v, name) => name === 'Lap Time' ? [formatTime(v), name] : [v, name]}
+          />
+          {stints.map(s => (
+            <Scatter
+              key={`${s.stint}-${s.compound}`}
+              name={s.compound}
+              data={(s.points || []).map(p => ({ tyre_life: p.tyre_life, lap_time: p.lap_time }))}
+              fill={COMPOUND_COLORS[s.compound] || '#888'}
+              opacity={0.85}
+            />
+          ))}
+        </ScatterChart>
+      </ResponsiveContainer>
+
+      {/* deg rate stats overlay */}
+      <div style={{ position: 'absolute', top: 10, right: 28, display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {stints.map((s, i) => (
+          <div key={i} style={{ fontSize: 11 }}>
+            <span style={{ color: COMPOUND_COLORS[s.compound] || '#888', fontWeight: 'bold' }}>
+              {s.compound}
+            </span>
+            <span style={{ color: '#fff', marginLeft: 6 }}>
+              {s.deg_rate >= 0 ? '+' : ''}{(s.deg_rate * 1000).toFixed(1)}ms/lap
+            </span>
+            <span style={{ color: '#555', marginLeft: 6 }}>
+              R²={s.r2.toFixed(2)}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -342,86 +538,6 @@ function DriverRaceDetail({ driver, data, year, race }) {
 //     </div>
 //   );
 // }
-function DriverLapAnalyzer({ year, race, driverNumber }) {
-  const [lapData, setLapData] = useState([]);
-
-  useEffect(() => {
-    fetch(`http://localhost:8000/api/historic/${year}/${race}/driver/${driverNumber}/laps`)
-      .then(res => res.json())
-      .then(json => {
-        if (!json.data) return;
-        
-        // We NO LONGER filter out slow laps, because doing so breaks 
-        // the continuous position timeline and hides pit stops.
-        const validPositions = json.data.filter(l => l.position !== null);
-        setLapData(validPositions);
-      })
-      .catch(() => setLapData([]));
-  }, [year, race, driverNumber]);
-
-  if (!lapData.length) return <div style={{ color: '#555', fontSize: 12 }}>Loading position trace...</div>;
-
-  // Custom SVG component to mark Pit Stops with a red circle and label
-  const PitStopMarker = (props) => {
-    const { cx, cy, payload } = props;
-    if (payload.pit_in) {
-      return (
-        <g transform={`translate(${cx},${cy})`}>
-          <circle r={5} fill="#111" stroke="#E80020" strokeWidth={2} />
-          <text x={0} y={-10} textAnchor="middle" fill="#E80020" fontSize={10} fontWeight="bold">PIT</text>
-        </g>
-      );
-    }
-    // Normal lap marker
-    return <circle cx={cx} cy={cy} r={2} fill="#0093CC" stroke="none" />;
-  };
-
-  return (
-    <ResponsiveContainer width="100%" height="100%">
-      <LineChart data={lapData} margin={{ top: 20, right: 20, left: -10, bottom: 0 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#222" vertical={false} />
-        
-        {/* X-Axis: Laps */}
-        <XAxis dataKey="lap" stroke="#666" tick={{ fontSize: 11 }} />
-        
-        {/* Y-Axis: Position (Reversed so P1 is at the top) */}
-        <YAxis 
-          domain={[1, 20]} 
-          reversed 
-          stroke="#666" 
-          tickFormatter={(v) => `P${v}`} 
-          tick={{ fontSize: 11 }} 
-          interval={0}
-          width={40}
-        />
-        
-        <Tooltip 
-          contentStyle={{ background: '#0a0a0a', border: '1px solid #333' }} 
-          labelStyle={{ color: '#888', marginBottom: 5 }}
-          formatter={(v, name, p) => {
-            if (name === 'position') {
-                const pitLabel = p.payload.pit_in ? ' (Pit Stop)' : '';
-                return [`P${v}${pitLabel} on ${p.payload.compound}`, 'Track Position'];
-            }
-            return [v, name];
-          }} 
-          labelFormatter={(label) => `Lap ${label}`}
-        />
-        
-        {/* stepAfter connects the line cleanly from lap to lap */}
-        <Line 
-          type="stepAfter" 
-          dataKey="position" 
-          stroke="#0093CC" 
-          strokeWidth={2} 
-          dot={<PitStopMarker />} 
-          activeDot={{ r: 6, fill: '#fff' }} 
-          isAnimationActive={false}
-        />
-      </LineChart>
-    </ResponsiveContainer>
-  );
-}
 
 // -----------------------------------------------------------------------------
 // QUALIFYING & SHOOTOUT DASHBOARD
