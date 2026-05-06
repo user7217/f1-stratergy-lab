@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, Cell } from 'recharts';
 
+const SEASON_TYRE_CACHE = {};
+
 const TEAM_COLORS = {
   "Red Bull Racing": "#3671C6", "Mercedes": "#27F4D2", "Ferrari": "#E80020",
   "McLaren": "#FF8000", "Aston Martin": "#229971", "Alpine": "#0093CC",
@@ -17,6 +19,7 @@ const CATEGORY_COLORS = {
 };
 
 const STAT_BOX = { background: '#111', padding: 15, borderRadius: 4, border: '1px solid #222', flex: 1 };
+
 
 function StatBox({ label, value, sub, color }) {
   return (
@@ -84,7 +87,7 @@ export default function SeasonPerformance({ year }) {
       </div>
 
       {/* TRACKS: full width, no sidebar */}
-      {category === 'TRACKS' && <TrackAnalysis data={data} />}
+      {category === 'TRACKS' && <TrackAnalysis data={data} year={year}/>}
 
       {/* All other views: sidebar + content */}
       {category !== 'TRACKS' && (
@@ -114,7 +117,7 @@ export default function SeasonPerformance({ year }) {
 
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 20, minWidth: 0, overflowY: 'auto', paddingRight: 10 }}>
             {category === 'GLOBAL' && <GlobalOverview data={data} />}
-            {category === 'TEAMS' && selectedId && <TeamDetail teamName={selectedId} data={data} />}
+            {category === 'TEAMS' && selectedId && <TeamDetail teamName={selectedId} data={data} year={year} />}
             {category === 'DRIVERS' && selectedId && <DriverDetail driver={selectedId} data={data} />}
           </div>
 
@@ -127,32 +130,51 @@ export default function SeasonPerformance({ year }) {
 // ---------------------------------------------------------
 // TRACK ANALYSIS
 // ---------------------------------------------------------
-function TrackAnalysis({ data }) {
+
+function TrackAnalysis({ data, year }) {
   const categories = data.categories || ['Power', 'Technical', 'Street', 'Mixed'];
   const [selectedCategory, setSelectedCategory] = useState(categories[0]);
-  const [metric, setMetric] = useState('avg_points');
+  const [metric,           setMetric]           = useState('avg_points');
+  const [tyreData,         setTyreData]         = useState(SEASON_TYRE_CACHE[year] || null);
+
+  useEffect(() => {
+    if (SEASON_TYRE_CACHE[year]) { setTyreData(SEASON_TYRE_CACHE[year]); return; }
+    fetch(`http://localhost:8000/api/historic/${year}/season-tyre-analysis`)
+      .then(r => r.json())
+      .then(j => {
+        if (!j.data) return;
+        SEASON_TYRE_CACHE[year] = j.data;
+        setTyreData(j.data);
+      })
+      .catch(() => {});
+  }, [year]);
 
   const metricLabel = metric === 'avg_points' ? 'Avg Pts / Race' : 'Avg Finish Pos';
 
+  const CATEGORY_COLORS_LOCAL = {
+    Power: '#FF6B35', Technical: '#9C27B0', Street: '#0093CC', Mixed: '#4CAF50',
+  };
+
+  // ranking chart data for selected category
   const categoryRanking = (data.teams || [])
     .map(t => ({
-      team: shortTeam(t.team),
+      team:     shortTeam(t.team),
       fullTeam: t.team,
-      value: t.cat_perf?.[selectedCategory]?.[metric] ?? 0,
-      races: t.cat_perf?.[selectedCategory]?.races ?? 0,
-      color: TEAM_COLORS[t.team] || '#888',
+      value:    t.cat_perf?.[selectedCategory]?.[metric] ?? 0,
+      races:    t.cat_perf?.[selectedCategory]?.races ?? 0,
+      color:    TEAM_COLORS[t.team] || '#888',
     }))
     .filter(t => t.races > 0)
     .sort((a, b) => metric === 'avg_finish' ? a.value - b.value : b.value - a.value);
 
-  const topTeams = (data.teams || []).slice(0, 6);
+  // cross-category top 6 teams
+  const topTeams  = (data.teams || []).slice(0, 6);
   const crossData = topTeams.map(t => ({
     team: shortTeam(t.team),
-    ...Object.fromEntries(
-      categories.map(c => [c, t.cat_perf?.[c]?.[metric] ?? 0])
-    ),
+    ...Object.fromEntries(categories.map(c => [c, t.cat_perf?.[c]?.[metric] ?? 0])),
   }));
 
+  // best team per category for insight cards
   const bestPerCategory = categories.map(c => {
     const sorted = (data.teams || [])
       .filter(t => (t.cat_perf?.[c]?.races ?? 0) > 0)
@@ -171,15 +193,25 @@ function TrackAnalysis({ data }) {
       <div style={{ display: 'flex', gap: 12 }}>
         {bestPerCategory.map(({ category: c, best }) => {
           if (!best) return null;
-          const perf = best.cat_perf?.[c];
+          const perf    = best.cat_perf?.[c];
+          const tyreCat = tyreData?.team_summary?.find(t => t.team === best.team)?.by_category?.[c];
           return (
-            <div key={c} style={{ flex: 1, background: '#111', border: `1px solid ${CATEGORY_COLORS[c]}`, borderRadius: 4, padding: '14px 16px' }}>
-              <div style={{ fontSize: 11, color: CATEGORY_COLORS[c], textTransform: 'uppercase', marginBottom: 8, fontWeight: 'bold' }}>{c}</div>
+            <div key={c} style={{
+              flex: 1, background: '#111',
+              border: `1px solid ${CATEGORY_COLORS_LOCAL[c]}`,
+              borderRadius: 4, padding: '14px 16px',
+            }}>
+              <div style={{ fontSize: 11, color: CATEGORY_COLORS_LOCAL[c], textTransform: 'uppercase', marginBottom: 8, fontWeight: 'bold' }}>{c}</div>
               <div style={{ fontSize: 15, fontWeight: 'bold', color: TEAM_COLORS[best.team] || '#fff', marginBottom: 4 }}>
                 {shortTeam(best.team)}
               </div>
               <div style={{ fontSize: 12, color: '#aaa' }}>{perf?.avg_points?.toFixed(1)} pts/race</div>
               <div style={{ fontSize: 11, color: '#555', marginTop: 2 }}>{perf?.races} races · P{perf?.avg_finish?.toFixed(1)} avg</div>
+              {tyreCat && tyreCat.n >= 2 && (
+                <div style={{ fontSize: 11, marginTop: 6, color: tyreCat.mean >= 0 ? '#4CAF50' : '#E80020' }}>
+                  Tyre: {tyreCat.mean >= 0 ? '+' : ''}{(tyreCat.mean * 1000).toFixed(0)}ms/lap
+                </div>
+              )}
             </div>
           );
         })}
@@ -190,9 +222,11 @@ function TrackAnalysis({ data }) {
         <div style={{ display: 'flex', gap: 8 }}>
           {categories.map(c => (
             <button key={c} onClick={() => setSelectedCategory(c)}
-              style={{ padding: '8px 16px', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 'bold',
-                background: selectedCategory === c ? CATEGORY_COLORS[c] : '#222',
-                color: selectedCategory === c ? '#fff' : '#aaa' }}>
+              style={{
+                padding: '8px 16px', border: 'none', borderRadius: 4, cursor: 'pointer', fontWeight: 'bold',
+                background: selectedCategory === c ? CATEGORY_COLORS_LOCAL[c] : '#222',
+                color: selectedCategory === c ? '#fff' : '#aaa',
+              }}>
               {c}
             </button>
           ))}
@@ -200,10 +234,12 @@ function TrackAnalysis({ data }) {
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           {['avg_points', 'avg_finish'].map(m => (
             <button key={m} onClick={() => setMetric(m)}
-              style={{ padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 12,
-                border: metric === m ? `1px solid ${CATEGORY_COLORS[selectedCategory]}` : '1px solid #333',
+              style={{
+                padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+                border: metric === m ? `1px solid ${CATEGORY_COLORS_LOCAL[selectedCategory]}` : '1px solid #333',
                 background: metric === m ? '#222' : 'transparent',
-                color: metric === m ? '#fff' : '#666' }}>
+                color: metric === m ? '#fff' : '#666',
+              }}>
               {m === 'avg_points' ? 'Pts / Race' : 'Avg Finish'}
             </button>
           ))}
@@ -213,7 +249,7 @@ function TrackAnalysis({ data }) {
       {/* single category ranking */}
       <div>
         <div style={{ color: '#888', fontSize: 12, textTransform: 'uppercase', marginBottom: 12 }}>
-          <span style={{ color: CATEGORY_COLORS[selectedCategory] }}>■ </span>
+          <span style={{ color: CATEGORY_COLORS_LOCAL[selectedCategory] }}>■ </span>
           {selectedCategory} Circuits — {metricLabel}
         </div>
         <div style={{ height: 280, background: '#111', padding: '15px 10px', borderRadius: 4 }}>
@@ -223,19 +259,20 @@ function TrackAnalysis({ data }) {
               <YAxis dataKey="team" type="category" stroke="#fff" width={85} tick={{ fontSize: 11 }} />
               <Tooltip
                 contentStyle={{ background: '#0a0a0a', border: '1px solid #333', fontSize: 12 }}
-                formatter={(v, _, p) => [`${typeof v === 'number' ? v.toFixed(2) : v}  (${p.payload.races} races)`, metricLabel]}
+                formatter={(v, _, p) => [
+                  `${typeof v === 'number' ? v.toFixed(2) : v}  (${p.payload.races} races)`,
+                  metricLabel,
+                ]}
               />
               <Bar dataKey="value" radius={[0, 3, 3, 0]}>
-                {categoryRanking.map((entry, i) => (
-                  <Cell key={i} fill={entry.color} />
-                ))}
+                {categoryRanking.map((entry, i) => <Cell key={i} fill={entry.color} />)}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      {/* cross-category comparison */}
+      {/* cross-category grouped chart */}
       <div>
         <div style={{ color: '#888', fontSize: 12, textTransform: 'uppercase', marginBottom: 12 }}>
           Top Teams — {metricLabel} Across All Track Types
@@ -251,66 +288,90 @@ function TrackAnalysis({ data }) {
                 formatter={v => [typeof v === 'number' ? v.toFixed(2) : v, metricLabel]}
               />
               <Legend wrapperStyle={{ fontSize: 11 }} />
-              {categories.map(c => (
-                <Bar key={c} dataKey={c} fill={CATEGORY_COLORS[c]} name={c} />
-              ))}
+              {categories.map(c => <Bar key={c} dataKey={c} fill={CATEGORY_COLORS_LOCAL[c]} name={c} />)}
             </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      {/* full breakdown table */}
+      {/* full breakdown table — race stats + tyre preservation per category */}
       <div>
         <div style={{ color: '#888', fontSize: 12, textTransform: 'uppercase', marginBottom: 12 }}>Full Breakdown</div>
-        <div style={{ border: '1px solid #222', borderRadius: 4, overflow: 'hidden' }}>
+        <div style={{ border: '1px solid #222', borderRadius: 4, overflow: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', background: '#111', color: '#fff' }}>
-            <thead style={{ background: '#1a1a1a' }}>
-              <tr>
-                <th style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, color: '#888', fontWeight: 'normal' }}>Team</th>
+            <thead>
+              <tr style={{ background: '#1a1a1a' }}>
+                <th rowSpan={2} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 11, color: '#888', fontWeight: 'normal', verticalAlign: 'bottom' }}>Team</th>
                 {categories.map(c => (
-                  <th key={c} colSpan={2} style={{ padding: '10px 12px', textAlign: 'center', fontSize: 11, color: CATEGORY_COLORS[c], fontWeight: 'normal', textTransform: 'uppercase' }}>{c}</th>
+                  <th key={c} colSpan={2} style={{ padding: '10px 8px', textAlign: 'center', fontSize: 11, color: CATEGORY_COLORS_LOCAL[c], fontWeight: 'normal', textTransform: 'uppercase', borderBottom: '1px solid #333' }}>
+                    {c}
+                  </th>
                 ))}
+                {categories.map(c => null) /* spacer — tyre headers in sub-row */}
               </tr>
               <tr style={{ background: '#141414' }}>
-                <th style={{ padding: '6px 12px' }} />
                 {categories.map(c => (
                   <React.Fragment key={c}>
                     <th style={{ padding: '6px 8px', fontSize: 10, color: '#555', fontWeight: 'normal', textAlign: 'center' }}>Pts/R</th>
-                    <th style={{ padding: '6px 8px', fontSize: 10, color: '#555', fontWeight: 'normal', textAlign: 'center' }}>AvgP</th>
+                    <th style={{ padding: '6px 8px', fontSize: 10, color: '#555', fontWeight: 'normal', textAlign: 'center', borderRight: '1px solid #1f1f1f' }}>AvgP</th>
                   </React.Fragment>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {(data.teams || []).map(t => (
-                <tr key={t.team} style={{ borderBottom: '1px solid #1a1a1a' }}>
-                  <td style={{ padding: '10px 12px', fontWeight: 'bold', color: TEAM_COLORS[t.team] || '#fff' }}>
-                    {shortTeam(t.team)}
-                  </td>
-                  {categories.map(c => {
-                    const p = t.cat_perf?.[c];
-                    const has = p && p.races > 0;
-                    return (
-                      <React.Fragment key={c}>
-                        <td style={{ padding: '10px 8px', textAlign: 'center', fontSize: 13, color: has ? '#fff' : '#333' }}>
-                          {has ? p.avg_points?.toFixed(1) : '—'}
-                        </td>
-                        <td style={{ padding: '10px 8px', textAlign: 'center', fontSize: 13, color: has ? '#aaa' : '#333' }}>
-                          {has && p.avg_finish ? `P${p.avg_finish?.toFixed(1)}` : '—'}
-                        </td>
-                      </React.Fragment>
-                    );
-                  })}
-                </tr>
-              ))}
+              {(data.teams || []).map(t => {
+                const tyreTeamRow = tyreData?.team_summary?.find(td => td.team === t.team);
+                return (
+                  <React.Fragment key={t.team}>
+                    {/* race performance row */}
+                    <tr style={{ borderBottom: '1px solid #1a1a1a' }}>
+                      <td style={{ padding: '10px 12px', fontWeight: 'bold', color: TEAM_COLORS[t.team] || '#fff' }}>
+                        {shortTeam(t.team)}
+                      </td>
+                      {categories.map(c => {
+                        const p   = t.cat_perf?.[c];
+                        const has = p && p.races > 0;
+                        return (
+                          <React.Fragment key={c}>
+                            <td style={{ padding: '10px 8px', textAlign: 'center', fontSize: 13, color: has ? '#fff' : '#333' }}>
+                              {has ? p.avg_points?.toFixed(1) : '—'}
+                            </td>
+                            <td style={{ padding: '10px 8px', textAlign: 'center', fontSize: 13, color: has ? '#aaa' : '#333', borderRight: '1px solid #1f1f1f' }}>
+                              {has && p.avg_finish ? `P${p.avg_finish?.toFixed(1)}` : '—'}
+                            </td>
+                          </React.Fragment>
+                        );
+                      })}
+                    </tr>
+                    {/* tyre preservation sub-row */}
+                    <tr style={{ borderBottom: '2px solid #222' }}>
+                      <td style={{ padding: '4px 12px 8px 12px', fontSize: 10, color: '#555' }}>tyre preservation</td>
+                      {categories.map(c => {
+                        const catStats = tyreTeamRow?.by_category?.[c];
+                        const has      = catStats && catStats.n >= 2;
+                        const color    = !has ? '#333'
+                          : catStats.mean >= 0.005  ? '#4CAF50'
+                          : catStats.mean <= -0.005 ? '#E80020'
+                          : '#aaa';
+                        return (
+                          <td key={c} colSpan={2} style={{ padding: '4px 8px 8px 8px', textAlign: 'center', fontSize: 11, color, borderRight: '1px solid #1f1f1f' }}>
+                            {has
+                              ? `${catStats.mean >= 0 ? '+' : ''}${(catStats.mean * 1000).toFixed(0)}ms/lap`
+                              : '—'}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
       </div>
-
     </div>
   );
-}
+} 
 
 // ---------------------------------------------------------
 // GLOBAL OVERVIEW
@@ -378,12 +439,45 @@ function GlobalOverview({ data }) {
 // ---------------------------------------------------------
 // TEAM DETAIL
 // ---------------------------------------------------------
-function TeamDetail({ teamName, data }) {
+function TeamDetail({ teamName, data, year }) {
   const stats = data.teams.find(t => t.team === teamName);
   if (!stats) return null;
 
-  const formGraph = data.races.map((race, index) => ({ race, points: stats.points_timeline[index] }));
+  const formGraph  = data.races.map((race, i) => ({ race, points: stats.points_timeline[i] }));
   const teamDrivers = data.drivers.filter(d => d.team === teamName);
+
+  const [tyreData, setTyreData] = useState(SEASON_TYRE_CACHE[year] || null);
+  const [tyreLoading, setTyreLoading] = useState(!SEASON_TYRE_CACHE[year]);
+
+  useEffect(() => {
+    if (SEASON_TYRE_CACHE[year]) { setTyreData(SEASON_TYRE_CACHE[year]); setTyreLoading(false); return; }
+    setTyreLoading(true);
+    fetch(`http://localhost:8000/api/historic/${year}/season-tyre-analysis`)
+      .then(r => r.json())
+      .then(j => {
+        if (!j.data) return;
+        SEASON_TYRE_CACHE[year] = j.data;
+        setTyreData(j.data);
+        setTyreLoading(false);
+      })
+      .catch(() => setTyreLoading(false));
+  }, [year]);
+
+  const tyreTeam       = (tyreData?.team_summary || []).find(t => t.team === teamName);
+  const tyreRank       = (tyreData?.team_summary || []).findIndex(t => t.team === teamName) + 1;
+  const totalTeams     = (tyreData?.team_summary || []).length;
+  const bestCompound   = tyreData?.best_compound_per_team?.[teamName];
+  const bestCategory   = tyreData?.best_category_per_team?.[teamName];
+
+  const rankColor = tyreRank <= 3 ? '#4CAF50' : tyreRank >= totalTeams - 2 ? '#E80020' : '#FFD124';
+
+  const COMPOUND_COLORS_LOCAL = {
+    SOFT: '#E80020', MEDIUM: '#FFD124', HARD: '#FFFFFF',
+    INTERMEDIATE: '#4CAF50', WET: '#2196F3',
+  };
+  const CATEGORY_COLORS_LOCAL = {
+    Power: '#FF6B35', Technical: '#9C27B0', Street: '#0093CC', Mixed: '#4CAF50',
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -392,6 +486,7 @@ function TeamDetail({ teamName, data }) {
         <h3 style={{ margin: 0, color: TEAM_COLORS[teamName] || '#fff' }}>{stats.points} PTS</h3>
       </div>
 
+      {/* race stats */}
       <div style={{ display: 'flex', gap: 15, flexWrap: 'wrap' }}>
         <StatBox label="Wins / Podiums" value={`${stats.wins} / ${stats.podiums}`} color="#FFD124" />
         <StatBox label="Total Poles" value={stats.poles} color="#E80020" />
@@ -399,7 +494,8 @@ function TeamDetail({ teamName, data }) {
         <StatBox label="Retirements" value={stats.dnfs} color={stats.dnfs > 5 ? '#E80020' : '#fff'} />
       </div>
 
-      <div style={{ ...STAT_BOX, minHeight: 350, flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
+      {/* WCC accumulation */}
+      <div style={{ ...STAT_BOX, minHeight: 300, flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
         <h3 style={{ color: '#aaa', fontSize: 13, textTransform: 'uppercase', marginBottom: 15 }}>WCC Points Accumulation</h3>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={formGraph} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
@@ -412,7 +508,8 @@ function TeamDetail({ teamName, data }) {
         </ResponsiveContainer>
       </div>
 
-      <div style={{ ...STAT_BOX, minHeight: 350, flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
+      {/* intra-team driver points */}
+      <div style={{ ...STAT_BOX, minHeight: 260, flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
         <h3 style={{ color: '#aaa', fontSize: 13, textTransform: 'uppercase', marginBottom: 15 }}>Intra-Team Driver Points</h3>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={teamDrivers} margin={{ top: 5, right: 0, left: -20, bottom: 0 }}>
@@ -424,6 +521,117 @@ function TeamDetail({ teamName, data }) {
           </BarChart>
         </ResponsiveContainer>
       </div>
+
+      {/* season tyre analysis */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 15 }}>
+        <h3 style={{ color: '#aaa', fontSize: 13, textTransform: 'uppercase', margin: 0 }}>Season Tyre Performance</h3>
+
+        {tyreLoading && <div style={{ color: '#555', fontSize: 12 }}>Loading tyre data...</div>}
+
+        {!tyreLoading && !tyreTeam && (
+          <div style={{ color: '#555', fontSize: 12 }}>No tyre data available for this team.</div>
+        )}
+
+        {!tyreLoading && tyreTeam && (
+          <>
+            {/* top summary row */}
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ background: '#0d0d0d', border: '1px solid #222', borderRadius: 4, padding: '12px 16px', minWidth: 90, flexShrink: 0 }}>
+                <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 6 }}>Tyre Rank</div>
+                <div style={{ fontSize: 26, fontWeight: 'bold', color: rankColor }}>P{tyreRank}</div>
+                <div style={{ fontSize: 11, color: '#555', marginTop: 2 }}>of {totalTeams}</div>
+              </div>
+
+              <div style={{ flex: 1, background: '#0d0d0d', border: '1px solid #222', borderRadius: 4, padding: '12px 16px', minWidth: 160 }}>
+                <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 6 }}>Season Avg Score</div>
+                <div style={{ fontSize: 22, fontWeight: 'bold', color: tyreTeam.overall.mean >= 0 ? '#4CAF50' : '#E80020' }}>
+                  {tyreTeam.overall.mean >= 0 ? '+' : ''}
+                  {(tyreTeam.overall.mean * 1000).toFixed(1)}
+                  <span style={{ fontSize: 12, color: '#666', fontWeight: 'normal' }}> ms/lap</span>
+                </div>
+                <div style={{ fontSize: 11, color: '#555', marginTop: 4 }}>
+                  best {(tyreTeam.overall.best * 1000).toFixed(1)} · worst {(tyreTeam.overall.worst * 1000).toFixed(1)} · {tyreTeam.overall.n} races
+                </div>
+              </div>
+
+              {bestCompound && (
+                <div style={{ flex: 1, background: '#0d0d0d', border: '1px solid #222', borderRadius: 4, padding: '12px 16px', minWidth: 130 }}>
+                  <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 6 }}>Best Compound</div>
+                  <div style={{ fontSize: 20, fontWeight: 'bold', color: COMPOUND_COLORS_LOCAL[bestCompound.compound] || '#fff' }}>
+                    {bestCompound.compound}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#555', marginTop: 4 }}>
+                    {bestCompound.score >= 0 ? '+' : ''}{(bestCompound.score * 1000).toFixed(1)}ms/lap vs field
+                  </div>
+                </div>
+              )}
+
+              {bestCategory && (
+                <div style={{ flex: 1, background: '#0d0d0d', border: '1px solid #222', borderRadius: 4, padding: '12px 16px', minWidth: 130 }}>
+                  <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 6 }}>Best Track Type</div>
+                  <div style={{ fontSize: 20, fontWeight: 'bold', color: CATEGORY_COLORS_LOCAL[bestCategory.category] || '#fff' }}>
+                    {bestCategory.category}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#555', marginTop: 4 }}>
+                    {bestCategory.score >= 0 ? '+' : ''}{(bestCategory.score * 1000).toFixed(1)}ms/lap vs field
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* per compound */}
+            <div style={{ background: '#0d0d0d', border: '1px solid #222', borderRadius: 4, padding: 16 }}>
+              <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 12 }}>By Compound</div>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                {Object.entries(tyreTeam.by_compound || {}).map(([comp, stats]) => {
+                  if (!stats) return null;
+                  return (
+                    <div key={comp} style={{
+                      flex: 1, minWidth: 110, background: '#111',
+                      border: `1px solid ${COMPOUND_COLORS_LOCAL[comp] || '#333'}44`,
+                      borderRadius: 4, padding: 12,
+                    }}>
+                      <div style={{ fontSize: 12, fontWeight: 'bold', color: COMPOUND_COLORS_LOCAL[comp] || '#888', marginBottom: 8 }}>{comp}</div>
+                      <div style={{ fontSize: 18, fontWeight: 'bold', color: stats.mean >= 0 ? '#4CAF50' : '#E80020' }}>
+                        {stats.mean >= 0 ? '+' : ''}{(stats.mean * 1000).toFixed(1)}ms
+                      </div>
+                      <div style={{ fontSize: 11, color: '#555', marginTop: 4 }}>{stats.n} races</div>
+                      <div style={{ fontSize: 11, color: '#555' }}>σ {(stats.std * 1000).toFixed(1)}ms</div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* per track category */}
+            <div style={{ background: '#0d0d0d', border: '1px solid #222', borderRadius: 4, padding: 16 }}>
+              <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 12 }}>By Track Type</div>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                {Object.entries(tyreTeam.by_category || {}).map(([cat, stats]) => {
+                  if (!stats || stats.n < 2) return null;
+                  return (
+                    <div key={cat} style={{
+                      flex: 1, minWidth: 110, background: '#111',
+                      border: `1px solid ${CATEGORY_COLORS_LOCAL[cat] || '#333'}55`,
+                      borderRadius: 4, padding: 12,
+                    }}>
+                      <div style={{ fontSize: 12, fontWeight: 'bold', color: CATEGORY_COLORS_LOCAL[cat] || '#888', marginBottom: 8 }}>{cat}</div>
+                      <div style={{ fontSize: 18, fontWeight: 'bold', color: stats.mean >= 0 ? '#4CAF50' : '#E80020' }}>
+                        {stats.mean >= 0 ? '+' : ''}{(stats.mean * 1000).toFixed(1)}ms
+                      </div>
+                      <div style={{ fontSize: 11, color: '#555', marginTop: 4 }}>{stats.n} races</div>
+                      <div style={{ fontSize: 11, color: '#555' }}>
+                        best {(stats.best * 1000).toFixed(1)} · worst {(stats.worst * 1000).toFixed(1)}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    {/* <TeamTyreSection teamName={teamName} year={year} /> */}
     </div>
   );
 }
@@ -495,6 +703,146 @@ function DriverDetail({ driver, data }) {
             <Line type="stepAfter" dataKey="points" stroke={TEAM_COLORS[stats.team] || '#fff'} strokeWidth={3} dot={{ r: 2 }} />
           </LineChart>
         </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+
+function TeamTyreSection({ teamName, year }) {
+  const [tyreData, setTyreData] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!year) return;
+    if (SEASON_TYRE_CACHE[year]) { setTyreData(SEASON_TYRE_CACHE[year]); return; }
+    setLoading(true);
+    fetch(`http://localhost:8000/api/historic/${year}/season-tyre-analysis`)
+      .then(r => r.json())
+      .then(j => {
+        SEASON_TYRE_CACHE[year] = j.data;
+        setTyreData(j.data);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, [year]);
+
+  if (loading) return <div style={{ color: '#555', fontSize: 12, padding: 20 }}>Loading tyre data...</div>;
+  if (!tyreData) return null;
+
+  const team = (tyreData.team_summary || []).find(t => t.team === teamName);
+  if (!team) return <div style={{ color: '#555', fontSize: 12, padding: 10 }}>No tyre data for this team.</div>;
+
+  const rank = (tyreData.team_summary || []).findIndex(t => t.team === teamName) + 1;
+  const total = tyreData.team_summary.length;
+  const rankColor = rank <= 3 ? '#4CAF50' : rank >= total - 2 ? '#E80020' : '#FFD124';
+
+  const bestCompound = tyreData.best_compound_per_team?.[teamName];
+  const bestCategory = tyreData.best_category_per_team?.[teamName];
+
+  const CATEGORY_COLORS = { Power: '#FF6B35', Technical: '#9C27B0', Street: '#0093CC', Mixed: '#4CAF50' };
+  const COMPOUND_COLORS = { SOFT: '#E80020', MEDIUM: '#FFD124', HARD: '#FFFFFF', INTERMEDIATE: '#4CAF50', WET: '#2196F3' };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 15, marginTop: 10 }}>
+      <h3 style={{ color: '#aaa', fontSize: 13, textTransform: 'uppercase', margin: 0 }}>
+        Season Tyre Performance
+      </h3>
+
+      {/* top row: rank, overall score, best compound, best category */}
+      <div style={{ display: 'flex', gap: 12 }}>
+        <div style={{ ...STAT_BOX, flex: '0 0 auto', minWidth: 90 }}>
+          <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 6 }}>Tyre Rank</div>
+          <div style={{ fontSize: 26, fontWeight: 'bold', color: rankColor }}>P{rank}</div>
+          <div style={{ fontSize: 11, color: '#555' }}>of {total}</div>
+        </div>
+
+        <div style={{ ...STAT_BOX }}>
+          <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 6 }}>Season Avg Score</div>
+          <div style={{ fontSize: 22, fontWeight: 'bold', color: team.overall.mean >= 0 ? '#4CAF50' : '#E80020' }}>
+            {team.overall.mean >= 0 ? '+' : ''}{(team.overall.mean * 1000).toFixed(1)}
+            <span style={{ fontSize: 12, color: '#666', fontWeight: 'normal' }}> ms/lap</span>
+          </div>
+          <div style={{ fontSize: 11, color: '#555', marginTop: 4 }}>
+            best {(team.overall.best * 1000).toFixed(1)} · worst {(team.overall.worst * 1000).toFixed(1)} · {team.overall.n} races
+          </div>
+        </div>
+
+        <div style={{ ...STAT_BOX }}>
+          <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 6 }}>Best Compound</div>
+          {bestCompound ? (
+            <>
+              <div style={{ fontSize: 20, fontWeight: 'bold', color: COMPOUND_COLORS[bestCompound.compound] || '#fff' }}>
+                {bestCompound.compound}
+              </div>
+              <div style={{ fontSize: 11, color: '#555', marginTop: 4 }}>
+                {bestCompound.score >= 0 ? '+' : ''}{(bestCompound.score * 1000).toFixed(1)}ms/lap vs field
+              </div>
+            </>
+          ) : <div style={{ color: '#555' }}>N/A</div>}
+        </div>
+
+        <div style={{ ...STAT_BOX }}>
+          <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 6 }}>Best Track Type</div>
+          {bestCategory ? (
+            <>
+              <div style={{ fontSize: 20, fontWeight: 'bold', color: CATEGORY_COLORS[bestCategory.category] || '#fff' }}>
+                {bestCategory.category}
+              </div>
+              <div style={{ fontSize: 11, color: '#555', marginTop: 4 }}>
+                {bestCategory.score >= 0 ? '+' : ''}{(bestCategory.score * 1000).toFixed(1)}ms/lap vs field
+              </div>
+            </>
+          ) : <div style={{ color: '#555' }}>N/A</div>}
+        </div>
+      </div>
+
+      {/* per compound breakdown */}
+      <div style={{ background: '#0d0d0d', border: '1px solid #222', borderRadius: 4, padding: 15 }}>
+        <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 12 }}>
+          Compound Breakdown
+        </div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          {Object.entries(team.by_compound || {}).map(([comp, stats]) => {
+            if (!stats) return null;
+            return (
+              <div key={comp} style={{ flex: 1, minWidth: 100, background: '#111', border: `1px solid ${COMPOUND_COLORS[comp] || '#333'}22`, borderRadius: 4, padding: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 'bold', color: COMPOUND_COLORS[comp] || '#888', marginBottom: 8 }}>{comp}</div>
+                <div style={{ fontSize: 16, fontWeight: 'bold', color: stats.mean >= 0 ? '#4CAF50' : '#E80020' }}>
+                  {stats.mean >= 0 ? '+' : ''}{(stats.mean * 1000).toFixed(1)}ms
+                </div>
+                <div style={{ fontSize: 11, color: '#555', marginTop: 4 }}>{stats.n} races</div>
+                <div style={{ fontSize: 11, color: '#555' }}>
+                  σ {(stats.std * 1000).toFixed(1)}ms
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* per category breakdown */}
+      <div style={{ background: '#0d0d0d', border: '1px solid #222', borderRadius: 4, padding: 15 }}>
+        <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 12 }}>
+          Track Type Breakdown
+        </div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          {Object.entries(team.by_category || {}).map(([cat, stats]) => {
+            if (!stats || stats.n < 2) return null;
+            return (
+              <div key={cat} style={{ flex: 1, minWidth: 100, background: '#111', border: `1px solid ${CATEGORY_COLORS[cat] || '#333'}44`, borderRadius: 4, padding: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 'bold', color: CATEGORY_COLORS[cat] || '#888', marginBottom: 8 }}>{cat}</div>
+                <div style={{ fontSize: 16, fontWeight: 'bold', color: stats.mean >= 0 ? '#4CAF50' : '#E80020' }}>
+                  {stats.mean >= 0 ? '+' : ''}{(stats.mean * 1000).toFixed(1)}ms
+                </div>
+                <div style={{ fontSize: 11, color: '#555', marginTop: 4 }}>{stats.n} races</div>
+                <div style={{ fontSize: 11, color: '#555' }}>
+                  best {(stats.best * 1000).toFixed(1)} · worst {(stats.worst * 1000).toFixed(1)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );

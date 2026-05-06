@@ -2,6 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
          Cell, LineChart, Line, ScatterChart, Scatter } from 'recharts';
 const OVERVIEW_CACHE = {};
+const TYRE_CACHE = {};
+
+const COMPOUND_COLORS = {
+  SOFT: '#E80020', MEDIUM: '#FFD124', HARD: '#FFFFFF',
+  INTERMEDIATE: '#4CAF50', WET: '#2196F3',
+};
+
+const CATEGORY_COLORS = {
+  Power: '#FF6B35', Technical: '#9C27B0', Street: '#0093CC', Mixed: '#4CAF50',
+};
 
 const getTyreColor = (compound) => {
   const c = String(compound).toLowerCase();
@@ -192,46 +202,56 @@ function RaceDashboard({ data, year, race }) {
   );
 }
 
-
 function DriverRaceDetail({ driver, data, year, race }) {
-  const speedStat = (data.speeds || []).find(s => s.abbreviation === driver);
-  const posDelta = (data.results || []).find(p => p.abbreviation === driver);
-  const startStat = (data.start_performance || []).find(s => s.abbreviation === driver);
-  const consStat = (data.consistency || []).find(c => c.abbreviation === driver);
-  const driverNum = speedStat?.driver;
-  const stints = data.strategies ? data.strategies[driver] : [];
+  const speedStat  = (data.speeds || []).find(s => s.abbreviation === driver);
+  const posDelta   = (data.results || []).find(p => p.abbreviation === driver);
+  const startStat  = (data.start_performance || []).find(s => s.abbreviation === driver);
+  const consStat   = (data.consistency || []).find(c => c.abbreviation === driver);
+  const driverNum  = speedStat?.driver;
+  const stints     = data.strategies ? data.strategies[driver] : [];
 
-  const [lapData, setLapData] = useState([]);
-  const [degData, setDegData] = useState([]);
-  const [degLoading, setDegLoading] = useState(false);
+  const [lapData,          setLapData]          = useState([]);
+  const [degData,          setDegData]          = useState([]);
+  const [racePreservation, setRacePreservation] = useState([]);
+  const [degLoading,       setDegLoading]       = useState(false);
 
   useEffect(() => {
     if (!driverNum) return;
     setLapData([]);
     setDegData([]);
+    setRacePreservation([]);
     setDegLoading(true);
 
     fetch(`http://localhost:8000/api/historic/${year}/${race}/driver/${driverNum}/laps`)
       .then(r => r.json())
-      .then(j => {
-        if (j.data) setLapData(j.data.filter(l => l.position !== null));
-      })
+      .then(j => { if (j.data) setLapData(j.data.filter(l => l.position !== null)); })
       .catch(() => {});
 
-    fetch(`http://localhost:8000/api/historic/${year}/${race}/tyre-degradation`)
-      .then(r => r.json())
-      .then(j => {
-        if (!j.data) return;
-        setDegData(j.data.stints.filter(s => s.abbreviation === driver));
+    const tyreKey = `${year}-${race}`;
+      if (TYRE_CACHE[tyreKey]) {
+        const cached = TYRE_CACHE[tyreKey];
+        setDegData(cached.stints.filter(s => s.abbreviation === driver));
+        setRacePreservation(cached.preservation || []);
         setDegLoading(false);
-      })
-      .catch(() => setDegLoading(false));
+      } else {
+        fetch(`http://localhost:8000/api/historic/${year}/${race}/tyre-degradation`)
+          .then(r => r.json())
+          .then(j => {
+            if (!j.data) return;
+            TYRE_CACHE[tyreKey] = j.data;
+            setDegData(j.data.stints.filter(s => s.abbreviation === driver));
+            setRacePreservation(j.data.preservation || []);
+            setDegLoading(false);
+          })
+          .catch(() => setDegLoading(false));
+      }
   }, [driverNum, year, race, driver]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <h2 style={{ margin: 0, color: '#fff', textTransform: 'uppercase' }}>{driver} — Race Report</h2>
 
+      {/* stat boxes */}
       <div style={{ display: 'flex', gap: 15, flexWrap: 'wrap' }}>
         <StatBox
           label="Positions Gained"
@@ -248,10 +268,7 @@ function DriverRaceDetail({ driver, data, year, race }) {
           value={startStat ? (startStat.delta > 0 ? `+${startStat.delta}` : `${startStat.delta}`) : 'N/A'}
           color={startStat?.delta > 0 ? '#4CAF50' : startStat?.delta < 0 ? '#E80020' : '#fff'}
         />
-        <StatBox
-          label="Top Speed"
-          value={speedStat?.speed ? `${speedStat.speed} km/h` : 'N/A'}
-        />
+        <StatBox label="Top Speed" value={speedStat?.speed ? `${speedStat.speed} km/h` : 'N/A'} />
         <StatBox
           label="Pace Variance"
           value={consStat?.variance ? `±${consStat.variance.toFixed(3)}s` : 'N/A'}
@@ -259,6 +276,7 @@ function DriverRaceDetail({ driver, data, year, race }) {
         />
       </div>
 
+      {/* tyre strategy timeline */}
       {stints && stints.length > 0 && (
         <div style={{ ...STAT_BOX, padding: '15px 20px', flexShrink: 0 }}>
           <div style={{ color: '#888', fontSize: 11, textTransform: 'uppercase', marginBottom: 10 }}>
@@ -266,17 +284,14 @@ function DriverRaceDetail({ driver, data, year, race }) {
           </div>
           <div style={{ display: 'flex', height: 24, background: '#222', borderRadius: 4, overflow: 'hidden' }}>
             {stints.map((s, i) => (
-              <div
-                key={i}
-                style={{
-                  width: `${(s.laps / Math.max(data.total_laps || 1, 1)) * 100}%`,
-                  background: getTyreColor(s.compound),
-                  borderRight: '2px solid #111',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  color: ['#FFFFFF', '#FFD124'].includes(getTyreColor(s.compound)) ? '#000' : '#fff',
-                  fontSize: 11, fontWeight: 'bold',
-                }}
-              >
+              <div key={i} style={{
+                width: `${(s.laps / Math.max(data.total_laps || 1, 1)) * 100}%`,
+                background: getTyreColor(s.compound),
+                borderRight: '2px solid #111',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: ['#FFFFFF', '#FFD124'].includes(getTyreColor(s.compound)) ? '#000' : '#fff',
+                fontSize: 11, fontWeight: 'bold',
+              }}>
                 {s.laps}L {s.compound?.charAt(0) || '?'}
               </div>
             ))}
@@ -284,13 +299,13 @@ function DriverRaceDetail({ driver, data, year, race }) {
         </div>
       )}
 
+      {/* position timeline */}
       {driverNum && (
         <div style={{ ...STAT_BOX, minHeight: 320, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
           <div style={{ color: '#888', fontSize: 11, textTransform: 'uppercase', marginBottom: 10, display: 'flex', justifyContent: 'space-between' }}>
             <span>Position Timeline & Pit Stops</span>
             <span>
-              <span style={{ color: '#0093CC' }}>— Track Position</span>
-              {' | '}
+              <span style={{ color: '#0093CC' }}>— Track Position</span>{' | '}
               <span style={{ color: '#E80020' }}>○ Pit Stop</span>
             </span>
           </div>
@@ -300,22 +315,202 @@ function DriverRaceDetail({ driver, data, year, race }) {
         </div>
       )}
 
-      <div style={{ ...STAT_BOX, minHeight: 320, display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
-        <div style={{ color: '#888', fontSize: 11, textTransform: 'uppercase', marginBottom: 10, display: 'flex', justifyContent: 'space-between' }}>
-          <span>Tyre Degradation — Lap Time vs Tyre Age</span>
-          <span style={{ color: '#555' }}>{degLoading ? 'calculating...' : degData.length === 0 ? 'no clean stint data' : ''}</span>
+      {/* tyre analysis */}
+      <div style={{ ...STAT_BOX, flexShrink: 0 }}>
+        <div style={{ color: '#888', fontSize: 11, textTransform: 'uppercase', marginBottom: 15 }}>
+          Tyre Analysis
+          {degLoading && <span style={{ color: '#444', marginLeft: 10, fontWeight: 'normal' }}>calculating...</span>}
         </div>
-        <div style={{ flex: 1, minHeight: 0 }}>
-          {degData.length > 0
-            ? <TyreDegChart stints={degData} />
-            : !degLoading && <div style={{ color: '#555', fontSize: 12, paddingTop: 10 }}>Insufficient clean laps to compute degradation.</div>
-          }
-        </div>
+        {!degLoading && degData.length === 0 && (
+          <div style={{ color: '#555', fontSize: 12 }}>Insufficient clean laps to compute degradation.</div>
+        )}
+        {!degLoading && degData.length > 0 && (
+          <DriverTyrePanel
+            stints={degData}
+            preservation={racePreservation}
+            driver={driver}
+          />
+        )}
       </div>
     </div>
   );
 }
 
+
+function DriverTyrePanel({ stints, preservation, driver }) {
+  const [selectedStint, setSelectedStint] = useState(0);
+
+  const driverPreservation = preservation.find(p => p.abbreviation === driver);
+  const driverRank         = preservation.findIndex(p => p.abbreviation === driver) + 1;
+  const totalDrivers       = preservation.length;
+  const stint              = stints[selectedStint] || stints[0];
+
+  const rankColor = driverRank <= 3 ? '#4CAF50'
+    : driverRank >= totalDrivers - 2 ? '#E80020'
+    : '#FFD124';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+      {/* preservation summary row */}
+      {driverPreservation && (
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <div style={{ background: '#0d0d0d', border: '1px solid #222', borderRadius: 4, padding: '12px 16px', minWidth: 90, flexShrink: 0 }}>
+            <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 6 }}>Tyre Rank</div>
+            <div style={{ fontSize: 26, fontWeight: 'bold', color: rankColor }}>P{driverRank}</div>
+            <div style={{ fontSize: 11, color: '#555', marginTop: 2 }}>of {totalDrivers}</div>
+          </div>
+
+          <div style={{ flex: 1, background: '#0d0d0d', border: '1px solid #222', borderRadius: 4, padding: '12px 16px', minWidth: 160 }}>
+            <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 6 }}>Preservation Score</div>
+            <div style={{ fontSize: 22, fontWeight: 'bold', color: driverPreservation.preservation_score >= 0 ? '#4CAF50' : '#E80020' }}>
+              {driverPreservation.preservation_score >= 0 ? '+' : ''}
+              {(driverPreservation.preservation_score * 1000).toFixed(1)}
+              <span style={{ fontSize: 12, color: '#666', fontWeight: 'normal' }}> ms/lap vs field</span>
+            </div>
+            <div style={{ fontSize: 11, color: '#555', marginTop: 4 }}>
+              positive = saved more tyre life than field median on same compound
+            </div>
+          </div>
+
+          <div style={{ flex: 1, background: '#0d0d0d', border: '1px solid #222', borderRadius: 4, padding: '12px 16px', minWidth: 140 }}>
+            <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 6 }}>Avg Push Level</div>
+            <div style={{ fontSize: 22, fontWeight: 'bold', color: '#fff' }}>
+              {driverPreservation.avg_push_score != null
+                ? `${driverPreservation.avg_push_score.toFixed(1)}%`
+                : 'N/A'}
+            </div>
+            <div style={{ fontSize: 11, color: '#555', marginTop: 4 }}>mean throttle off-brake all stints</div>
+          </div>
+
+          {Object.keys(driverPreservation.by_compound || {}).length > 0 && (
+            <div style={{ flex: 1, background: '#0d0d0d', border: '1px solid #222', borderRadius: 4, padding: '12px 16px', minWidth: 140 }}>
+              <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 10 }}>By Compound</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+                {Object.entries(driverPreservation.by_compound).map(([comp, score]) => (
+                  <div key={comp} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: 12, fontWeight: 'bold', color: COMPOUND_COLORS[comp] || '#888' }}>
+                      {comp}
+                    </span>
+                    <span style={{ fontSize: 12, color: score >= 0 ? '#4CAF50' : '#E80020' }}>
+                      {score >= 0 ? '+' : ''}{(score * 1000).toFixed(1)}ms/lap
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* stint selector */}
+      <div>
+        <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 10 }}>Stint Detail</div>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+          {stints.map((s, i) => (
+            <button key={i} onClick={() => setSelectedStint(i)}
+              style={{
+                padding: '6px 14px', border: 'none', borderRadius: 4,
+                cursor: 'pointer', fontSize: 12,
+                background: selectedStint === i ? COMPOUND_COLORS[s.compound] || '#888' : '#222',
+                color: selectedStint === i && ['MEDIUM', 'HARD'].includes(s.compound) ? '#000' : '#fff',
+                fontWeight: selectedStint === i ? 'bold' : 'normal',
+              }}>
+              S{s.stint} — {s.compound?.charAt(0) || '?'} ({s.stint_length}L)
+            </button>
+          ))}
+        </div>
+
+        {stint && (
+          <div style={{ display: 'flex', gap: 15, flexWrap: 'wrap' }}>
+
+            {/* factors */}
+            <div style={{ flex: '0 0 300px', background: '#0d0d0d', border: '1px solid #222', borderRadius: 4, padding: 16 }}>
+              <div style={{ fontSize: 11, color: '#888', textTransform: 'uppercase', marginBottom: 14 }}>
+                Contributing Factors
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <FactorRow
+                  label="Raw Deg Rate"
+                  value={`${(stint.deg_rate * 1000).toFixed(1)}ms/lap`}
+                  sub="observed lap time loss per tyre lap"
+                />
+                <FactorRow
+                  label="Temp-Adjusted Deg"
+                  value={`${(stint.deg_rate_normalised * 1000).toFixed(1)}ms/lap`}
+                  sub={`track ${stint.mean_track_temp?.toFixed(1)}°C · correction ${(stint.temp_correction * 1000).toFixed(1)}ms`}
+                  highlight={Math.abs(stint.temp_correction) > 0.01}
+                />
+                <FactorRow
+                  label="Push Level"
+                  value={stint.avg_push_score != null ? `${stint.avg_push_score.toFixed(1)}%` : 'No telemetry'}
+                  sub={
+                    stint.avg_push_score == null ? 'telemetry unavailable for this session' :
+                    stint.avg_push_score >= 88 ? 'pushing hard — high tyre stress' :
+                    stint.avg_push_score >= 75 ? 'moderate push' :
+                    'managing — tyres nursed'
+                  }
+                  highlight={stint.avg_push_score != null && stint.avg_push_score < 75}
+                />
+                <FactorRow
+                  label="Dirty Air Laps Removed"
+                  value={`${stint.dirty_air_excluded} laps`}
+                  sub="within 1.2s of car ahead — excluded from regression"
+                  highlight={stint.dirty_air_excluded > 2}
+                />
+                <FactorRow
+                  label="Downforce Index"
+                  value={stint.downforce_index?.toFixed(3) ?? 'N/A'}
+                  sub={
+                    !stint.downforce_index ? 'unavailable' :
+                    stint.downforce_index > 1.05 ? 'high downforce — more tyre load vs field' :
+                    stint.downforce_index < 0.95 ? 'low downforce — less tyre stress vs field' :
+                    'near field average'
+                  }
+                  highlight={stint.downforce_index > 1.05 || stint.downforce_index < 0.95}
+                />
+                <FactorRow
+                  label="Regression Quality"
+                  value={`R² = ${stint.r2?.toFixed(2)}`}
+                  sub={
+                    stint.r2 >= 0.8 ? 'clean — high confidence' :
+                    stint.r2 >= 0.6 ? 'moderate — some disruption' :
+                    'noisy — treat with caution'
+                  }
+                  highlight={stint.r2 < 0.5}
+                />
+                <FactorRow
+                  label="Clean Laps Used"
+                  value={`${stint.n_laps} / ${stint.stint_length}`}
+                  sub="after SC, dirty air, in/out lap and σ-clip filters"
+                />
+              </div>
+            </div>
+
+            {/* scatter chart */}
+            <div style={{ flex: 1, minWidth: 280, minHeight: 300 }}>
+              <TyreDegChart stints={[stint]} />
+            </div>
+
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+function FactorRow({ label, value, sub, highlight }) {
+  return (
+    <div style={{ borderLeft: `3px solid ${highlight ? '#FFD93D' : '#2a2a2a'}`, paddingLeft: 10 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }}>
+        <span style={{ fontSize: 12, color: '#aaa', flexShrink: 0 }}>{label}</span>
+        <span style={{ fontSize: 13, fontWeight: 'bold', color: highlight ? '#FFD93D' : '#fff', textAlign: 'right' }}>{value}</span>
+      </div>
+      {sub && <div style={{ fontSize: 11, color: '#555', marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
 
 function DriverLapAnalyzer({ lapData }) {
   if (!lapData.length) {
@@ -377,13 +572,13 @@ function DriverLapAnalyzer({ lapData }) {
 
 
 function TyreDegChart({ stints }) {
-  const COMPOUND_COLORS = {
-    SOFT: '#E80020',
-    MEDIUM: '#FFD124',
-    HARD: '#FFFFFF',
-    INTERMEDIATE: '#4CAF50',
-    WET: '#2196F3',
-  };
+  // const COMPOUND_COLORS = {
+  //   SOFT: '#E80020',
+  //   MEDIUM: '#FFD124',
+  //   HARD: '#FFFFFF',
+  //   INTERMEDIATE: '#4CAF50',
+  //   WET: '#2196F3',
+  // };
 
   if (!stints.length) return null;
 
