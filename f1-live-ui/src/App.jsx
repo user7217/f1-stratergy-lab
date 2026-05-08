@@ -6,7 +6,7 @@ import RaceOverview from './RaceOverview';
 import SeasonPerformance from './SeasonPerformance';
 import StatusBar from './StatusBar';
 import RaceControlFeed from './RaceControlFeed';
-
+import Logo from './assets/Logo.gif';
 const inputStyle = {
   width: '100%', background: '#1a1a1a', color: '#fff',
   border: '1px solid #333', padding: '6px', fontFamily: 'inherit',
@@ -100,25 +100,35 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw', fontFamily: 'monospace', backgroundColor: '#000', color: '#EEE' }}>
-
-      {/* LEFT SIDEBAR (Always Visible) */}
-      <div style={{ width: 300, borderRight: '1px solid #333', overflowY: 'auto', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+      <div>
         
-        {/* Navigation Tabs */}
-        <div style={{ display: 'flex', padding: 10, gap: 5, borderBottom: '1px solid #333', background: '#0a0a0a' }}>
-          <button onClick={() => handleNavigate('/')}
-            style={{ flex: 1, padding: 8, background: isLive ? '#E80020' : '#222', color: '#fff', border: 'none', cursor: 'pointer', borderRadius: 4, fontWeight: 'bold', fontSize: 11 }}>
-            LIVE
-          </button>
-          <button onClick={() => handleNavigate('/overview')}
-            style={{ flex: 1, padding: 8, background: isOverview ? '#E80020' : '#222', color: '#fff', border: 'none', cursor: 'pointer', borderRadius: 4, fontWeight: 'bold', fontSize: 11 }}>
-            OVERVIEW
-          </button>
-          <button onClick={() => handleNavigate('/season')}
-            style={{ flex: 1, padding: 8, background: isSeason ? '#E80020' : '#222', color: '#fff', border: 'none', cursor: 'pointer', borderRadius: 4, fontWeight: 'bold', fontSize: 11 }}>
-            SEASON
-          </button>
-        </div>
+      </div>
+      {/* LEFT SIDEBAR (Always Visible) */}
+<div style={{ width: 300, borderRight: '1px solid #333', overflowY: 'auto', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+  
+  {/* Logo Section */}
+  <div style={{ 
+    padding: '20px 10px', 
+    display: 'flex', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    background: '#000', 
+    borderBottom: '1px solid #333' 
+  }}>
+    <img 
+        src={Logo}
+        // src={'./assets/Logo.gif'}
+        alt="F1 Strategy Lab" 
+        style={{ width: '100%', maxWidth: '600px' }} 
+      />
+  </div>
+
+  {/* Navigation Tabs */}
+  <div style={{ display: 'flex', padding: 10, gap: 5, borderBottom: '1px solid #333', background: '#0a0a0a' }}>
+    <button onClick={() => handleNavigate('/')} style={{ flex: 1, padding: 8, background: isLive ? '#E80020' : '#222', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>Live</button>
+    <button onClick={() => handleNavigate('/overview')} style={{ flex: 1, padding: 8, background: isOverview ? '#E80020' : '#222', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>Overview</button>
+    <button onClick={() => handleNavigate('/season')} style={{ flex: 1, padding: 8, background: isSeason ? '#E80020' : '#222', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}>Season</button>
+  </div>
 
         {/* Global Settings */}
         <div style={{ padding: 15, borderBottom: '1px solid #333', background: '#0a0a0a' }}>
