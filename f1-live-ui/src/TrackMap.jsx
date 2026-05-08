@@ -1,9 +1,18 @@
 //Aranav Contribution
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 
 // Color codes for the three F1 sectors
 // S1 = Red, S2 = Cyan, S3 = Yellow
 const SECTOR_COLORS = ['#FF4757', '#26C6DA', '#FFD93D'];
+
+// SVG scaling constants for responsive sizing
+const TRACK_STROKE_RATIO = 0.012;
+const CAR_RADIUS_RATIO = 0.014;
+const SELECTED_CAR_SCALE = 1.8;
+const CAR_LABEL_OFFSET = 2.4;
+const CORNER_FONT_RATIO = 0.018;
+const CAR_NUMBER_FONT_RATIO = 0.025;
+const PADDING_RATIO = 0.08;
 
 export default function TrackMap({ positions, drivers, selectedDriver, onSelectDriver, year, race }) {
   // Store circuit layout data and any load errors
@@ -47,7 +56,7 @@ export default function TrackMap({ positions, drivers, selectedDriver, onSelectD
     const minX = Math.min(...xs), maxX = Math.max(...xs);
     const minY = Math.min(...ys), maxY = Math.max(...ys);
     const w = maxX - minX, h = maxY - minY;
-    const padX = w * 0.08, padY = h * 0.08;
+    const padX = w * PADDING_RATIO, padY = h * PADDING_RATIO;
     return {
       sectorPaths: paths,
       viewBox: `${minX - padX} ${minY - padY} ${w + 2 * padX} ${h + 2 * padY}`,
@@ -60,8 +69,13 @@ export default function TrackMap({ positions, drivers, selectedDriver, onSelectD
   if (!circuit) return <Centered>Loading track...</Centered>;
 
   // Scale stroke width and car size based on track width for responsive design
-  const trackStrokeW = mapWidth * 0.012;
-  const carRadius = mapWidth * 0.014;
+  const trackStrokeW = mapWidth * TRACK_STROKE_RATIO;
+  const carRadius = mapWidth * CAR_RADIUS_RATIO;
+  
+  // Memoize driver selection handler
+  const handleSelectDriver = useCallback((driverNum) => {
+    onSelectDriver(driverNum);
+  }, [onSelectDriver]);
 
   return (
     <div style={{ flex: 1, backgroundColor: '#111', display: 'flex', overflow: 'hidden' }}>
@@ -83,7 +97,7 @@ export default function TrackMap({ positions, drivers, selectedDriver, onSelectD
         {circuit.corners.map(c => {
           const { rx, ry } = rotate(c.x, c.y);
           return (
-            <text key={c.number} x={rx} y={ry} fill="#888" fontSize={mapWidth * 0.018}
+            <text key={c.number} x={rx} y={ry} fill="#888" fontSize={mapWidth * CORNER_FONT_RATIO}
                   textAnchor="middle" dominantBaseline="middle">
               {c.number}{c.letter}
             </text>
@@ -99,11 +113,15 @@ export default function TrackMap({ positions, drivers, selectedDriver, onSelectD
           const { rx, ry } = rotate(pos.x, pos.y);
           return (
             <g key={pos.driver_number} transform={`translate(${rx}, ${ry})`}
-               onClick={() => onSelectDriver(pos.driver_number)} style={{ cursor: 'pointer' }}>
+               onClick={() => handleSelectDriver(pos.driver_number)} 
+               onKeyDown={(e) => e.key === 'Enter' && handleSelectDriver(pos.driver_number)}
+               role="button"
+               tabIndex={0}
+               style={{ cursor: 'pointer' }}>
               {/* Car circle with team color */}
-              <circle r={r} fill={color} stroke={sel ? '#fff' : '#000'} strokeWidth={r * 0.2} />
+              <circle r={r} fill={color} stroke={sel ? '#fff' : '#000'} strokeWidth={r * 0.2} aria-label={`Driver ${pos.driver_number}`} />
               {/* Driver number label */}
-              <text y={r * 2.4} fill={sel ? '#fff' : '#aaa'} fontSize={mapWidth * 0.025}
+              <text y={r * CAR_LABEL_OFFSET} fill={sel ? '#fff' : '#aaa'} fontSize={mapWidth * CAR_NUMBER_FONT_RATIO}
                     textAnchor="middle" fontWeight={sel ? 'bold' : 'normal'}>
                 {pos.driver_number}
               </text>
@@ -116,8 +134,10 @@ export default function TrackMap({ positions, drivers, selectedDriver, onSelectD
 }
 
 // Centered layout component for loading/error messages
-const Centered = ({ children }) => (
+const Centered = React.memo(({ children }) => (
   <div style={{ flex: 1, backgroundColor: '#111', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
     <p style={{ color: '#888' }}>{children}</p>
   </div>
-);
+));
+
+Centered.displayName = 'Centered';
