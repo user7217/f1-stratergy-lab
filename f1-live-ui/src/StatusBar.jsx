@@ -1,5 +1,5 @@
 //Aranav Contribution
-import React from 'react';
+import React, { useMemo } from 'react';
 
 // Maps flag statuses to their corresponding colors
 // Green = all clear, Yellow = caution, Orange = safety car/VSC, Red = stop
@@ -16,6 +16,11 @@ const FLAG_LABELS = {
   VSCEnding: 'VSC ENDING', Red: 'RED', Unknown: '—',
 };
 
+// Utility function to format weather measurements
+const formatWeatherValue = (value, decimals = 1) => {
+  return value?.toFixed(decimals) ?? 'N/A';
+};
+
 export default function StatusBar({ session, weather, trackStatus }) {
   // Get current flag status, defaults to AllClear
   const flag = trackStatus?.status || 'AllClear';
@@ -25,8 +30,12 @@ export default function StatusBar({ session, weather, trackStatus }) {
   const lap = session?.current_lap ?? 0;
   const totalLaps = session?.total_laps ?? '-';
 
-  // Cell styling for status bar items
-  const cell = { padding: '4px 12px', borderRight: '1px solid #222', fontSize: 12 };
+  // Cell styling for status bar items - memoized to prevent re-creation
+  const cell = useMemo(() => ({
+    padding: '4px 12px',
+    borderRight: '1px solid #222',
+    fontSize: 12,
+  }), []);
 
   return (
     // Top status bar displaying race info
@@ -46,10 +55,10 @@ export default function StatusBar({ session, weather, trackStatus }) {
       {/* Weather information display */}
       {weather && (
         <>
-          <div style={cell}>AIR <strong style={{ color: '#fff' }}>{weather.air_temp?.toFixed(1)}°C</strong></div>
-          <div style={cell}>TRACK <strong style={{ color: '#fff' }}>{weather.track_temp?.toFixed(1)}°C</strong></div>
-          <div style={cell}>WIND <strong style={{ color: '#fff' }}>{weather.wind_speed?.toFixed(1)}m/s</strong></div>
-          <div style={cell}>HUMIDITY <strong style={{ color: '#fff' }}>{weather.humidity?.toFixed(0)}%</strong></div>
+          <div style={cell}>AIR <strong style={{ color: '#fff' }}>{formatWeatherValue(weather.air_temp)}°C</strong></div>
+          <div style={cell}>TRACK <strong style={{ color: '#fff' }}>{formatWeatherValue(weather.track_temp)}°C</strong></div>
+          <div style={cell}>WIND <strong style={{ color: '#fff' }}>{formatWeatherValue(weather.wind_speed)}m/s</strong></div>
+          <div style={cell}>HUMIDITY <strong style={{ color: '#fff' }}>{formatWeatherValue(weather.humidity, 0)}%</strong></div>
           {/* Show rain indicator if rainfall is present */}
           {weather.rainfall && <div style={{ ...cell, color: '#2196F3' }}>RAIN</div>}
         </>
