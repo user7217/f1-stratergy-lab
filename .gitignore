@@ -28,3 +28,4 @@ live_f1/live_f1_venv
 live_f1/test1.py
 live_f1/test.py
 live_f1/.env
+live_f1/__pycache__
