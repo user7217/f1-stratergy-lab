@@ -31,13 +31,21 @@ function StatBox({ label, value, sub, color }) {
   );
 }
 
+const TEAM_MAP = {
+  'Oracle Red Bull Racing': 'Red Bull',
+  'Mercedes-AMG Petronas Formula One Team': 'Mercedes',
+  'Scuderia Ferrari': 'Ferrari',
+  'McLaren Formula 1 Team': 'McLaren',
+  'Aston Martin Aramco Formula One Team': 'Aston Martin',
+  'BWT Alpine F1 Team': 'Alpine',
+  'Stake F1 Team Kick Sauber': 'Sauber',
+  'Visa Cash App RB F1 Team': 'RB',
+  'Williams Racing': 'Williams',
+  'MoneyGram Haas F1 Team': 'Haas'
+};
+
 function shortTeam(name) {
-  return (name || '')
-    .replace(' Formula 1 Team', '').replace(' F1 Team', '')
-    .replace(' Racing', '').replace('Scuderia ', '')
-    .replace('BWT Alpine', 'Alpine').replace('Visa Cash App ', '')
-    .replace('Oracle ', '').replace('Mastercard ', '')
-    .replace('TGR Haas', 'Haas').trim();
+  return TEAM_MAP[name] || name;
 }
 
 export default function SeasonPerformance({ year }) {
