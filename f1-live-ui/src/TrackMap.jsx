@@ -64,18 +64,19 @@ export default function TrackMap({ positions, drivers, selectedDriver, onSelectD
     };
   }, [circuit]);
 
-  // Show error or loading state
+  // ALL hooks must be before any early returns — Rules of Hooks
+  // Memoize driver selection handler
+  const handleSelectDriver = useCallback((driverNum) => {
+    onSelectDriver(driverNum);
+  }, [onSelectDriver]);
+
+  // Early returns AFTER all hooks
   if (error) return <Centered>Track load failed: {error}</Centered>;
   if (!circuit) return <Centered>Loading track...</Centered>;
 
   // Scale stroke width and car size based on track width for responsive design
   const trackStrokeW = mapWidth * TRACK_STROKE_RATIO;
   const carRadius = mapWidth * CAR_RADIUS_RATIO;
-  
-  // Memoize driver selection handler
-  const handleSelectDriver = useCallback((driverNum) => {
-    onSelectDriver(driverNum);
-  }, [onSelectDriver]);
 
   return (
     <div style={{ flex: 1, backgroundColor: '#111', display: 'flex', overflow: 'hidden' }}>
@@ -109,7 +110,7 @@ export default function TrackMap({ positions, drivers, selectedDriver, onSelectD
           const drv = drivers[pos.driver_number];
           const color = drv?.team_color || '#fff';
           const sel = String(selectedDriver) === String(pos.driver_number);
-          const r = sel ? carRadius * 1.8 : carRadius;
+          const r = sel ? carRadius * SELECTED_CAR_SCALE : carRadius;
           const { rx, ry } = rotate(pos.x, pos.y);
           return (
             <g key={pos.driver_number} transform={`translate(${rx}, ${ry})`}
