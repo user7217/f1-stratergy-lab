@@ -1,314 +1,21 @@
-import asyncio
 import math
-import datetime
+import pathlib
+import pickle
 import fastf1
 import pandas as pd
 import numpy as np
-import threading
-from fastapi import APIRouter, HTTPException
 from functools import lru_cache
 from typing import Optional
 
-# primary characteristic per circuit (by FastF1 Location field)
-TRACK_CATEGORIES = {
-    # Power — engine/straight limited, low-downforce
-    'Monza': 'Power', 'Baku': 'Power', 'Jeddah': 'Power',
-    'Las Vegas': 'Power', 'Spielberg': 'Power', 'Silverstone': 'Power',
-    'Spa-Francorchamps': 'Power',
+# Use relative imports (the dot)
+from .config import TRACK_CATEGORIES, CATEGORIES, REF_TRACK_TEMP
+from .utils import to_seconds, safe_float, _get_safe_session
 
-    # Technical — mechanical grip, slow corners, high-downforce
-    'Monaco': 'Technical', 'Budapest': 'Technical', 'Zandvoort': 'Technical',
-    'Barcelona': 'Technical', 'Suzuka': 'Technical', 'Losail': 'Technical',
-
-    # Street — temporary circuit characteristics, walls, bumps
-    'Marina Bay': 'Street', 'Melbourne': 'Street',
-    'Miami': 'Street', 'Montreal': 'Street',
-
-    # Mixed — balanced characteristics
-    'Sakhir': 'Mixed', 'Shanghai': 'Mixed', 'Austin': 'Mixed',
-    'Mexico City': 'Mixed', 'São Paulo': 'Mixed', 'Yas Marina': 'Mixed',
-    'Imola': 'Mixed', 'Portimão': 'Mixed', 'Mugello': 'Mixed',
-    'Nürburgring': 'Mixed', 'Istanbul': 'Mixed', 'Bahrain': 'Mixed',
-    'Lusail': 'Mixed', 'Kyalami': 'Mixed',
-}
-
-CATEGORIES = ['Power', 'Technical', 'Street', 'Mixed']
-
-
-router = APIRouter(prefix="/api/historic")
-
-# Global lock to prevent FastF1 cache corruption when React makes concurrent requests
-_F1_LOCK = threading.Lock()
-
-
-#helper functions 
-
-
-def _compute_push_scores(session) -> dict[str, list[float]]:
-    """
-    Vectorised version — reads car_data once per driver, 
-    then assigns throttle mean per lap using LapNumber index.
-    Avoids ~1000 individual get_telemetry() calls.
-    """
-    scores = {}
-    try:
-        laps = session.laps
-        for drv in session.drivers:
-            try:
-                # read full car data for driver in one shot
-                car = session.car_data[drv].copy()
-                if car.empty or 'Throttle' not in car.columns:
-                    scores[drv] = []
-                    continue
-
-                # add LapNumber to car data by merging on SessionTime
-                drv_laps = laps.pick_driver(drv)[['LapNumber', 'LapStartTime', 'Time']].copy()
-                drv_laps = drv_laps.dropna(subset=['LapStartTime', 'Time'])
-
-                # assign lap number to each telemetry sample via searchsorted
-                lap_start_times = drv_laps['LapStartTime'].dt.total_seconds().to_numpy()
-                car_times       = car['SessionTime'].dt.total_seconds().to_numpy()
-                lap_indices     = np.searchsorted(lap_start_times, car_times, side='right') - 1
-
-                car = car.copy()
-                car['_lap_idx'] = lap_indices
-
-                # per lap: mean throttle excluding brake-on samples
-                lap_scores = []
-                drv_lap_list = laps.pick_driver(drv)['LapNumber'].tolist()
-
-                for i, _ in enumerate(drv_lap_list):
-                    lap_tel = car[
-                        (car['_lap_idx'] == i) &
-                        (car['Brake'] == False)
-                    ]
-                    if len(lap_tel) < 10:
-                        lap_scores.append(None)
-                    else:
-                        lap_scores.append(float(lap_tel['Throttle'].mean()))
-
-                scores[drv] = lap_scores
-
-            except Exception:
-                scores[drv] = []
-    except Exception:
-        pass
-    return scores
-
-
-def _compute_dirty_air_laps(session) -> dict[str, set[int]]:
-    """
-    Returns {driver_number: {lap_numbers_in_dirty_air}}
-    A lap is dirty air if the driver was within 1.2s of the car ahead
-    for most of that lap. Uses lap time position ordering as proxy.
-    """
-    laps = session.laps
-    dirty = {}
-    try:
-        results = session.results
-        drv_pos = {str(r['DriverNumber']): int(r['Position']) for _, r in results.iterrows()
-                   if pd.notna(r.get('Position'))}
-
-        for lap_num in laps['LapNumber'].dropna().unique():
-            lap_slice = laps[laps['LapNumber'] == lap_num].copy()
-            if lap_slice.empty:
-                continue
-            # sort by elapsed time to find who was where on track
-            lap_slice = lap_slice.sort_values('Time')
-            drv_list = lap_slice['DriverNumber'].tolist()
-            times = lap_slice['Time'].dt.total_seconds().tolist()
-
-            for i, drv in enumerate(drv_list):
-                if i == 0:
-                    continue  # race leader, no car ahead
-                car_ahead_idx = i - 1
-                gap = times[i] - times[car_ahead_idx]
-                if 0 <= gap <= 1.2:
-                    dirty.setdefault(str(drv), set()).add(int(lap_num))
-    except Exception:
-        pass
-    return dirty
-
-
-REF_AIR_TEMP   = 40.0   # °C
-REF_TRACK_TEMP = 55.0   # °C
-# Pirelli estimate: roughly 0.003s per lap per °C above reference track temp
-# for soft/medium. Hard is slightly less sensitive.
-TEMP_SENSITIVITY = {"SOFT": 0.004, "MEDIUM": 0.003, "HARD": 0.002,
-                    "INTERMEDIATE": 0.001, "WET": 0.001}
-
-def _temp_correction(mean_track_temp: float, compound: str) -> float:
-    """
-    Returns seconds/lap to subtract from observed deg rate to normalise
-    to reference track temperature. Positive = track was hotter than ref.
-    """
-    delta = mean_track_temp - REF_TRACK_TEMP
-    sensitivity = TEMP_SENSITIVITY.get(compound.upper(), 0.003)
-    return delta * sensitivity
-
-
-
-def _compute_downforce_index(session) -> dict[str, float]:
-    """
-    Returns {driver_number: downforce_index}
-    Index > 1.0 = running more downforce than field average (slower in straights)
-    Index < 1.0 = running less downforce than field average (faster in straights)
-    Uses SpeedST (speed trap) relative to field median.
-    """
-    laps = session.laps
-    if 'SpeedST' not in laps.columns:
-        return {}
-    try:
-        field_median = laps['SpeedST'].median()
-        if pd.isna(field_median) or field_median == 0:
-            return {}
-        index = {}
-        for drv in session.drivers:
-            drv_laps = laps.pick_drivers(drv)
-            drv_median = drv_laps['SpeedST'].median()
-            if pd.notna(drv_median) and drv_median > 0:
-                # lower speed = more downforce, so invert
-                index[str(drv)] = float(field_median / drv_median)
-        return index
-    except Exception:
-        return {}
-    
-    
-def _compute_preservation_ranking(stints: list[dict]) -> list[dict]:
-    """
-    Ranks drivers by how well they preserved tyres relative to expectation.
-    
-    Method:
-      1. For each compound, compute the field median normalised deg rate
-      2. Each driver's preservation score = median - their deg rate
-         (positive = better than field, negative = worse)
-      3. Weight by r2 and stint length
-      4. Average across all stints per driver
-    
-    Returns sorted list, best preserver first.
-    """
-    from collections import defaultdict
-
-    # field median per compound (normalised, r2-weighted)
-    compound_rates: dict[str, list] = defaultdict(list)
-    for s in stints:
-        if s['r2'] >= 0.5:   # only reliable stints in field reference
-            compound_rates[s['compound']].append(
-                (s['deg_rate_normalised'], s['r2'], s['n_laps'])
-            )
-
-    compound_median: dict[str, float] = {}
-    for comp, vals in compound_rates.items():
-        weights = [r2 * n for _, r2, n in vals]
-        total_w = sum(weights) or 1
-        compound_median[comp] = sum(r * w for (r, _, _), w in zip(vals, weights)) / total_w
-
-    # per-driver weighted preservation score
-    driver_scores: dict[str, dict] = {}
-    for s in stints:
-        if s['r2'] < 0.4:
-            continue   # too noisy to count
-        ref = compound_median.get(s['compound'])
-        if ref is None:
-            continue
-
-        score    = ref - s['deg_rate_normalised']   # higher = better
-        weight   = s['r2'] * s['n_laps']
-        drv      = s['abbreviation']
-        compound = s['compound']
-
-        if drv not in driver_scores:
-            driver_scores[drv] = {
-                "abbreviation":   drv,
-                "team":           s['team'],
-                "weighted_sum":   0.0,
-                "total_weight":   0.0,
-                "by_compound":    {},
-                "avg_push_score": [],
-                "stints_counted": 0,
-            }
-
-        ds = driver_scores[drv]
-        ds["weighted_sum"]  += score * weight
-        ds["total_weight"]  += weight
-        ds["stints_counted"] += 1
-        if s['avg_push_score'] is not None:
-            ds["avg_push_score"].append(s['avg_push_score'])
-
-        if compound not in ds["by_compound"]:
-            ds["by_compound"][compound] = {"weighted_sum": 0.0, "total_weight": 0.0}
-        ds["by_compound"][compound]["weighted_sum"]  += score * weight
-        ds["by_compound"][compound]["total_weight"]  += weight
-
-    ranking = []
-    for drv, ds in driver_scores.items():
-        if ds["total_weight"] == 0:
-            continue
-        overall = ds["weighted_sum"] / ds["total_weight"]
-        by_comp = {
-            comp: round(v["weighted_sum"] / v["total_weight"], 4)
-            for comp, v in ds["by_compound"].items()
-            if v["total_weight"] > 0
-        }
-        push_scores_list = ds["avg_push_score"]
-        ranking.append({
-            "abbreviation":        drv,
-            "team":                ds["team"],
-            "preservation_score":  round(overall, 4),
-            # positive = saved X seconds/lap vs field on same compound
-            "avg_push_score":      round(float(np.mean(push_scores_list)), 1) if push_scores_list else None,
-            "stints_counted":      ds["stints_counted"],
-            "by_compound":         by_comp,
-        })
-
-    return sorted(ranking, key=lambda x: x["preservation_score"], reverse=True)
-    
-
-def to_seconds(val, t0=None):
-    if val is None or pd.isna(val):
-        return None
-    try:
-        if hasattr(val, 'total_seconds'):
-            sec = float(val.total_seconds())
-            return None if math.isnan(sec) else sec
-        if hasattr(val, 'timestamp'):
-            if t0 is not None and pd.notna(t0):
-                sec = float((val - t0).total_seconds())
-                return None if math.isnan(sec) else sec
-            return float(val.hour * 3600 + val.minute * 60 + val.second + val.microsecond / 1e6)
-        sec = float(val)
-        return None if math.isnan(sec) else sec
-    except (ValueError, TypeError):
-        return None
-def safe_float(val, default=None):
-    if val is None or pd.isna(val):
-        return default
-    try:
-        if math.isnan(float(val)):
-            return default
-        return float(val)
-    except (TypeError, ValueError):
-        return default
-    
-
-def _get_safe_session(year: int, race: str, session_type: str, telemetry: bool = False):
-    """Thread-safe session loader that prevents cache corruption and catches future races."""
-    with _F1_LOCK:
-        session = fastf1.get_session(year, race, session_type)
-        
-        if session.date > pd.Timestamp.now():
-            raise ValueError(f"The {year} {race} {session_type} session has not occurred yet.")
-
-        # Pass the telemetry flag dynamically to save RAM/Time
-        session.load(laps=True, telemetry=telemetry, weather=True, messages=True)
-        
-        if getattr(session, 'laps', None) is None or session.laps.empty:
-            raise ValueError("FastF1 loaded the session but no lap data was found.")
-            
-        return session
-
-
-#main functions
+# Keep your underscores here too
+from .telemetry import (
+    _compute_push_scores, _compute_dirty_air_laps, _stint_degradation, 
+    _compute_downforce_index, _compute_preservation_ranking
+)
 
 @lru_cache(maxsize=32)
 def _get_race_results(year: int, race: str) -> list[dict]:
@@ -328,7 +35,6 @@ def _get_race_results(year: int, race: str) -> list[dict]:
         })
     return processed
 
-@lru_cache(maxsize=64)
 def _get_driver_laps(year: int, race: str, driver: str) -> list[dict]:
     try:
         session = _get_safe_session(year, race, 'R', telemetry=False)
@@ -352,23 +58,6 @@ def _get_driver_laps(year: int, race: str, driver: str) -> list[dict]:
         })
     return processed
 
-
-
-
-
-def _safely_load_session(session):
-    """Attempts fast load. Falls back to deep load if FastF1 cache throws DataNotLoadedError."""
-    try:
-        session.load(telemetry=False, weather=False, messages=True)
-        _ = session.laps
-        _ = session.results
-    except Exception:
-        try:
-            session.load() # Failsafe
-        except Exception:
-            pass
-        
-        
 @lru_cache(maxsize=32)
 def _get_qualifying_analytics(year: int, race: str, session_type: str) -> dict:
     try:
@@ -461,6 +150,7 @@ def _get_qualifying_analytics(year: int, race: str, session_type: str) -> dict:
         "results": sorted(driver_results, key=lambda x: x['position'] or 999),
         "attempts": driver_attempts
     }
+
 
 @lru_cache(maxsize=32)
 def _get_session_overview(year: int, race: str, session_type: str = 'R') -> dict:
@@ -580,110 +270,10 @@ def _get_session_overview(year: int, race: str, session_type: str = 'R') -> dict
         "start_performance": sorted(start_performance, key=lambda x: x['delta'], reverse=True),
         "consistency": sorted([c for c in consistency if c['variance'] > 0], key=lambda x: x['variance'])
     }
+
+
     
-def _stint_degradation(
-    stint_laps: pd.DataFrame,
-    push_scores: list[Optional[float]],   # per lap in this stint
-    dirty_air_laps: set[int],             # lap numbers in dirty air
-    mean_track_temp: float,
-    compound: str,
-) -> Optional[dict]:
-    """
-    Linear regression of lap time vs tyre age with:
-    - push score weighting (de-weight managed laps)
-    - dirty air lap exclusion
-    - temperature normalisation
-    - σ-clip outliers
-    """
-    clean = stint_laps[
-        (stint_laps['IsAccurate'] == True) &
-        (stint_laps['TrackStatus'].astype(str).isin(['1', '2'])) &
-        stint_laps['LapTime'].notna() &
-        stint_laps['TyreLife'].notna() &
-        stint_laps['PitOutTime'].isna() &
-        stint_laps['PitInTime'].isna()
-    ].copy()
 
-    # exclude dirty air laps — they inflate deg artificially
-    dirty_mask = clean['LapNumber'].isin(dirty_air_laps)
-    clean_no_dirty = clean[~dirty_mask]
-
-    # if removing dirty air leaves too little, keep them but flag it
-    dirty_air_excluded = int(dirty_mask.sum())
-    use = clean_no_dirty if len(clean_no_dirty) >= 4 else clean
-
-    if len(use) < 4:
-        return None
-
-    x   = use['TyreLife'].to_numpy(dtype=float)
-    y   = use['LapTime'].dt.total_seconds().to_numpy()
-
-    # build per-lap push weights
-    # managed lap (push < 70) gets weight 0.4, full push (>90) gets 1.0
-    weights = []
-    lap_nums = use['LapNumber'].tolist()
-    all_laps = stint_laps['LapNumber'].tolist()
-    for ln in lap_nums:
-        try:
-            idx = all_laps.index(ln)
-            ps  = push_scores[idx] if idx < len(push_scores) else None
-        except (ValueError, IndexError):
-            ps = None
-        if ps is None:
-            weights.append(0.7)          # unknown — moderate weight
-        elif ps >= 90:
-            weights.append(1.0)          # full push
-        elif ps >= 75:
-            weights.append(0.8)          # moderate push
-        else:
-            weights.append(0.4)          # managing / saving tyres
-    w = np.array(weights)
-
-    # σ-clip outliers on unweighted residuals first
-    mask = np.abs(y - y.mean()) < 2 * y.std()
-    x, y, w = x[mask], y[mask], w[mask]
-    if len(x) < 4:
-        return None
-
-    # weighted least squares
-    W      = np.diag(w)
-    X_mat  = np.column_stack([np.ones_like(x), x])
-    try:
-        coeffs = np.linalg.lstsq(W @ X_mat, W @ y, rcond=None)[0]
-    except np.linalg.LinAlgError:
-        return None
-
-    intercept, slope = float(coeffs[0]), float(coeffs[1])
-
-    y_pred = intercept + slope * x
-    ss_res = float(np.sum(w * (y - y_pred) ** 2))
-    ss_tot = float(np.sum(w * (y - y.mean()) ** 2))
-    r2     = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
-
-    # temperature-normalised deg rate
-    temp_adj    = _temp_correction(mean_track_temp, compound)
-    norm_slope  = slope - temp_adj
-
-    # avg push score for this stint (managed vs pushed flag)
-    valid_ps = [p for p in push_scores if p is not None]
-    avg_push = float(np.mean(valid_ps)) if valid_ps else None
-
-    return {
-        "deg_rate":          slope,        # raw observed
-        "deg_rate_normalised": norm_slope, # temp-adjusted, comparable cross-race
-        "base_pace":         intercept,
-        "n_laps":            int(len(x)),
-        "stint_length":      int(len(clean)),
-        "dirty_air_excluded": dirty_air_excluded,
-        "avg_push_score":    avg_push,
-        "mean_track_temp":   mean_track_temp,
-        "temp_correction":   temp_adj,
-        "r2":                r2,
-        "points": [
-            {"tyre_life": float(xi), "lap_time": float(yi)}
-            for xi, yi in zip(x, y)
-        ],
-    }
 
 @lru_cache(maxsize=16)
 def _get_tyre_degradation(year: int, race, telemetry: bool = True) -> dict:
@@ -709,6 +299,7 @@ def _get_tyre_degradation(year: int, race, telemetry: bool = True) -> dict:
         pass
 
     stints = []
+    total_race_laps = int(laps['LapNumber'].max()) if 'LapNumber' in laps.columns else 0 
 
     for drv in session.drivers:
         drv_laps = laps.pick_drivers(drv)
@@ -736,10 +327,11 @@ def _get_tyre_degradation(year: int, race, telemetry: bool = True) -> dict:
                     stint_push.append(drv_push[idx] if idx < len(drv_push) else None)
                 except (ValueError, IndexError):
                     stint_push.append(None)
+                   
 
             deg = _stint_degradation(
                 sl, stint_push, drv_dirty,
-                mean_track_temp, compound,
+                mean_track_temp, compound, total_race_laps
             )
             if deg is None:
                 continue
@@ -764,6 +356,8 @@ def _get_tyre_degradation(year: int, race, telemetry: bool = True) -> dict:
         "stints":       stints,
         "preservation": preservation,
     }
+
+
 
 
 @lru_cache(maxsize=8)
@@ -995,6 +589,7 @@ def _get_circuit_data(year: int, race: str) -> dict:
     }
 
 
+
 @lru_cache(maxsize=16)
 def _get_season_races(year: int) -> list[dict]:
     schedule = fastf1.get_event_schedule(year, include_testing=False)
@@ -1010,6 +605,10 @@ def _get_season_races(year: int) -> list[dict]:
             "format": str(ev.get("EventFormat", "conventional")),
         })
     return out
+
+
+
+
 
 @lru_cache(maxsize=4)
 def _get_season_tyre_analysis(year: int) -> dict:
@@ -1143,68 +742,3 @@ def _get_season_tyre_analysis(year: int) -> dict:
         "best_compound_per_team": best_compound_per_team,
         "best_category_per_team": best_category_per_team,
     }
-
-
-# --- Routes ---
-
-@router.get("/{year}/{race}/overview/{session_type}")
-async def historic_session_overview(year: int, race: str, session_type: str):
-    loop = asyncio.get_running_loop()
-    return {"data": await loop.run_in_executor(None, _get_session_overview, year, race, session_type)}
-
-@router.get("/{year}/season-performance")
-async def historic_season_performance(year: int):
-    loop = asyncio.get_running_loop()
-    return {"data": await loop.run_in_executor(None, _get_season_performance, year)}
-
-
-@router.get("/{year}/{race}/driver/{driver}/laps")
-async def historic_driver_laps(year: int, race: str, driver: str):
-    loop = asyncio.get_running_loop()
-    return {"data": await loop.run_in_executor(None, _get_driver_laps, year, race, driver)}
-
-
-@router.get("/{year}/{race}/circuit")
-async def get_circuit(year: int, race: str):
-    loop = asyncio.get_running_loop()
-    try:
-        data = await loop.run_in_executor(None, _get_circuit_data, year, race)
-    except Exception as e:
-        raise HTTPException(500, f"circuit load failed: {e}")
-    return {"data": data}
-
-
-@router.get("/seasons/{year}/races")
-async def get_season_races(year: int):
-    loop = asyncio.get_running_loop()
-    try:
-        data = await loop.run_in_executor(None, _get_season_races, year)
-    except Exception as e:
-        raise HTTPException(500, f"schedule load failed: {e}")
-    return {"data": data}   
-
-# @router.get("/{year}/{race}/tyre-degradation")
-# async def tyre_degradation(year: int, race: str):
-#     loop = asyncio.get_running_loop()
-#     try:
-#         return {"data": await loop.run_in_executor(None, _get_tyre_degradation, year, race)}
-#     except Exception as e:
-#         raise HTTPException(500, f"deg calc failed: {e}")
-    
-@router.get("/{year}/{race}/tyre-degradation")
-async def tyre_degradation(year: int, race: str):
-    loop = asyncio.get_running_loop()
-    try:
-        # telemetry=True for single race — full analysis
-        return {"data": await loop.run_in_executor(None, _get_tyre_degradation, year, race, True)}
-    except Exception as e:
-        raise HTTPException(500, f"tyre deg failed: {e}")
-
-
-@router.get("/{year}/season-tyre-analysis")
-async def season_tyre_analysis(year: int):
-    loop = asyncio.get_running_loop()
-    try:
-        return {"data": await loop.run_in_executor(None, _get_season_tyre_analysis, year)}
-    except Exception as e:
-        raise HTTPException(500, f"season tyre analysis failed: {e}")

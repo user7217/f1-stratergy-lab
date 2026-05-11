@@ -4,7 +4,7 @@ from pathlib import Path
 import fastf1
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routes_historic import router as historic_router
+from historic.routes import router as historic_router
 from state import StateManager
 from replay import FastF1Replayer
 from routes import make_router
